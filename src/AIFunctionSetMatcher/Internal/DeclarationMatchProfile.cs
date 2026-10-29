@@ -9,14 +9,14 @@ internal sealed class DeclarationMatchProfile
 {
     private DeclarationMatchProfile(
         AIFunctionDeclaration declaration,
-        string schemaSignature,
+        SchemaFingerprint schemaFingerprint,
         int schemaByteCount,
-        HashSet<string> nameTokens,
-        HashSet<string> descriptionTokens,
+        TokenSet nameTokens,
+        TokenSet descriptionTokens,
         bool hasDescription)
     {
         Declaration = declaration;
-        SchemaSignature = schemaSignature;
+        SchemaFingerprint = schemaFingerprint;
         SchemaByteCount = schemaByteCount;
         NameTokens = nameTokens;
         DescriptionTokens = descriptionTokens;
@@ -29,9 +29,9 @@ internal sealed class DeclarationMatchProfile
     public AIFunctionDeclaration Declaration { get; }
 
     /// <summary>
-    /// 获取规范化后的 Schema 语义签名。
+    /// 获取规范化后的 Schema 语义指纹。
     /// </summary>
-    public string SchemaSignature { get; }
+    public SchemaFingerprint SchemaFingerprint { get; }
 
     /// <summary>
     /// 获取输入 Schema 原始文本的 UTF-8 字节数。
@@ -41,12 +41,12 @@ internal sealed class DeclarationMatchProfile
     /// <summary>
     /// 获取预计算的名称 token 集合。
     /// </summary>
-    public HashSet<string> NameTokens { get; }
+    public TokenSet NameTokens { get; }
 
     /// <summary>
     /// 获取预计算的描述 token 集合。
     /// </summary>
-    public HashSet<string> DescriptionTokens { get; }
+    public TokenSet DescriptionTokens { get; }
 
     /// <summary>
     /// 获取描述是否存在且包含非空白字符。
@@ -60,17 +60,19 @@ internal sealed class DeclarationMatchProfile
     /// <returns>新的匹配档案。</returns>
     public static DeclarationMatchProfile Create(AIFunctionDeclaration declaration)
     {
-        var hasDescription = !string.IsNullOrWhiteSpace(declaration.Description);
+        var name = declaration.Name;
+        var description = declaration.Description;
+        var hasDescription = !string.IsNullOrWhiteSpace(description);
         var schemaSignature = global::AIFunctionSetMatcher.Internal.SchemaSignature.Compute(
             declaration);
         return new DeclarationMatchProfile(
             declaration,
-            schemaSignature.Value,
+            schemaSignature.Fingerprint,
             schemaSignature.Utf8ByteCount,
-            TextSimilarity.TokenizeName(declaration.Name),
+            TextSimilarity.TokenizeName(name),
             hasDescription
-                ? TextSimilarity.TokenizeDescription(declaration.Description)
-                : [],
+                ? TextSimilarity.TokenizeDescription(description)
+                : TokenSet.Empty,
             hasDescription);
     }
 }

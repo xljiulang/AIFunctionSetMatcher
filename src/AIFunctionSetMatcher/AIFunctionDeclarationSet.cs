@@ -43,26 +43,32 @@ public sealed class AIFunctionDeclarationSet
         IEnumerable<AIFunctionDeclaration> declarations)
     {
         ArgumentNullException.ThrowIfNull(declarations);
-        var normalized = declarations.Select(
-            declaration =>
-            {
-                if (declaration is null)
-                {
-                    throw new AIFunctionDeclarationSetParseException(
-                        "函数声明集合不能包含 null。");
-                }
+        return ValidateAndCreate(declarations.ToArray());
+    }
 
-                return declaration;
-            }).ToArray();
-        if (normalized.Length > MaximumDeclarationCount)
+    /// <summary>
+    /// 验证声明数量、null 元素和名称唯一性，并创建集合。
+    /// </summary>
+    /// <param name="declarations">由当前方法接管且不会被调用方复用的声明数组。</param>
+    /// <returns>新的函数声明集合。</returns>
+    private static AIFunctionDeclarationSet ValidateAndCreate(
+        AIFunctionDeclaration[] declarations)
+    {
+        if (declarations.Length > MaximumDeclarationCount)
         {
             throw new AIFunctionDeclarationSetParseException(
                 "函数声明数量不能超过 256。");
         }
 
         var names = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var declaration in normalized)
+        foreach (var declaration in declarations)
         {
+            if (declaration is null)
+            {
+                throw new AIFunctionDeclarationSetParseException(
+                    "函数声明集合不能包含 null。");
+            }
+
             if (!names.Add(declaration.Name))
             {
                 throw new AIFunctionDeclarationSetParseException(
@@ -70,7 +76,7 @@ public sealed class AIFunctionDeclarationSet
             }
         }
 
-        return new AIFunctionDeclarationSet(normalized);
+        return new AIFunctionDeclarationSet(declarations);
     }
 
     /// <summary>
@@ -146,10 +152,29 @@ public sealed class AIFunctionDeclarationSet
         params AIFunctionDeclarationSet[] others)
     {
         ArgumentNullException.ThrowIfNull(others);
-        return From(
-            _declarations.Concat(
-                others.SelectMany(
-                    other => other ?? throw new ArgumentNullException(nameof(others)))));
+        var totalCount = _declarations.Length;
+        foreach (var other in others)
+        {
+            ArgumentNullException.ThrowIfNull(other, nameof(others));
+            totalCount = checked(totalCount + other._declarations.Length);
+        }
+
+        if (totalCount > MaximumDeclarationCount)
+        {
+            throw new AIFunctionDeclarationSetParseException(
+                "函数声明数量不能超过 256。");
+        }
+
+        var declarations = new AIFunctionDeclaration[totalCount];
+        _declarations.CopyTo(declarations, 0);
+        var destinationIndex = _declarations.Length;
+        foreach (var other in others)
+        {
+            other._declarations.CopyTo(declarations, destinationIndex);
+            destinationIndex += other._declarations.Length;
+        }
+
+        return ValidateAndCreate(declarations);
     }
 
     /// <summary>
@@ -165,7 +190,7 @@ public sealed class AIFunctionDeclarationSet
         ArgumentNullException.ThrowIfNull(other);
         options ??= AIFunctionMatchOptions.Default;
         options.Validate();
-        return From(
+        return CreateVerified(
             DeclarationMatcher.FindUnmatched(
                 _matchIndex.Value,
                 other._matchIndex.Value,
@@ -185,7 +210,7 @@ public sealed class AIFunctionDeclarationSet
         ArgumentNullException.ThrowIfNull(other);
         options ??= AIFunctionMatchOptions.Default;
         options.Validate();
-        return From(
+        return CreateVerified(
             DeclarationMatcher.FindMatched(
                 _matchIndex.Value,
                 other._matchIndex.Value,
@@ -449,6 +474,17 @@ public sealed class AIFunctionDeclarationSet
             throw new AIFunctionDeclarationSetParseException(
                 $"属性“{propertyName}”必须是 JSON Schema 对象。");
         }
+    }
+
+    /// <summary>
+    /// 从现有集合的已校验子集创建新集合，不重复执行名称和数量校验。
+    /// </summary>
+    /// <param name="declarations">已确认满足集合约束且拥有独立后备数组的声明。</param>
+    /// <returns>新的函数声明集合。</returns>
+    private static AIFunctionDeclarationSet CreateVerified(
+        AIFunctionDeclaration[] declarations)
+    {
+        return new AIFunctionDeclarationSet(declarations);
     }
 
     /// <summary>

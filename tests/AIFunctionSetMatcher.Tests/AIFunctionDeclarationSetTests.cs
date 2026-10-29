@@ -535,6 +535,194 @@ public sealed class AIFunctionDeclarationSetTests
     }
 
     [Fact]
+    public void Except_normalizes_equivalent_schema_number_representations()
+    {
+        var left = AIFunctionDeclarationSet.From(
+            [
+                Declaration(
+                    "set_retry_count",
+                    "Set retry count.",
+                    """
+                    {
+                      "type": "object",
+                      "properties": {
+                        "retryCount": {
+                          "type": "integer",
+                          "default": 1.0
+                        }
+                      }
+                    }
+                    """),
+            ]);
+        var right = AIFunctionDeclarationSet.From(
+            [
+                Declaration(
+                    "set_retry_count",
+                    "Set retry count.",
+                    """
+                    {
+                      "properties": {
+                        "retryCount": {
+                          "default": 1,
+                          "type": "integer"
+                        }
+                      },
+                      "type": "object"
+                    }
+                    """),
+            ]);
+
+        Assert.Empty(left.Except(right));
+    }
+
+    [Fact]
+    public void Except_rejects_a_required_collection_change()
+    {
+        var left = AIFunctionDeclarationSet.From(
+            [
+                Declaration(
+                    "search",
+                    "Search records.",
+                    """
+                    {
+                      "type": "object",
+                      "properties": {
+                        "query": { "type": "string" },
+                        "limit": { "type": "integer" }
+                      },
+                      "required": ["query"]
+                    }
+                    """),
+            ]);
+        var right = AIFunctionDeclarationSet.From(
+            [
+                Declaration(
+                    "search",
+                    "Search records.",
+                    """
+                    {
+                      "type": "object",
+                      "properties": {
+                        "query": { "type": "string" },
+                        "limit": { "type": "integer" }
+                      },
+                      "required": ["limit"]
+                    }
+                    """),
+            ]);
+
+        Assert.Single(left.Except(right));
+    }
+
+    [Fact]
+    public void Except_normalizes_camel_case_and_snake_case_names()
+    {
+        const string schema = """{ "type": "object" }""";
+        var left = AIFunctionDeclarationSet.From(
+            [Declaration("get_user_record", "Get a user record.", schema)]);
+        var right = AIFunctionDeclarationSet.From(
+            [Declaration("GetUserRecord", "Get a user record.", schema)]);
+
+        Assert.Empty(left.Except(right));
+    }
+
+    [Fact]
+    public void Except_normalizes_unordered_schema_composition_and_definitions()
+    {
+        var left = AIFunctionDeclarationSet.From(
+            [
+                Declaration(
+                    "resolve_value",
+                    "Resolve a value.",
+                    """
+                    {
+                      "$defs": {
+                        "text": { "type": "string" },
+                        "number": { "type": "integer" }
+                      },
+                      "type": "object",
+                      "properties": {
+                        "value": {
+                          "oneOf": [
+                            { "$ref": "#/$defs/text" },
+                            { "$ref": "#/$defs/number" }
+                          ]
+                        }
+                      }
+                    }
+                    """),
+            ]);
+        var right = AIFunctionDeclarationSet.From(
+            [
+                Declaration(
+                    "resolve_value",
+                    "Resolve a value.",
+                    """
+                    {
+                      "properties": {
+                        "value": {
+                          "oneOf": [
+                            { "$ref": "#/$defs/number" },
+                            { "$ref": "#/$defs/text" }
+                          ]
+                        }
+                      },
+                      "type": "object",
+                      "$defs": {
+                        "number": { "type": "integer" },
+                        "text": { "type": "string" }
+                      }
+                    }
+                    """),
+            ]);
+
+        Assert.Empty(left.Except(right));
+    }
+
+    [Fact]
+    public void Except_rejects_a_ref_target_change()
+    {
+        var left = AIFunctionDeclarationSet.From(
+            [
+                Declaration(
+                    "resolve_value",
+                    "Resolve a value.",
+                    """
+                    {
+                      "$defs": {
+                        "text": { "type": "string" },
+                        "number": { "type": "integer" }
+                      },
+                      "type": "object",
+                      "properties": {
+                        "value": { "$ref": "#/$defs/text" }
+                      }
+                    }
+                    """),
+            ]);
+        var right = AIFunctionDeclarationSet.From(
+            [
+                Declaration(
+                    "resolve_value",
+                    "Resolve a value.",
+                    """
+                    {
+                      "$defs": {
+                        "text": { "type": "string" },
+                        "number": { "type": "integer" }
+                      },
+                      "type": "object",
+                      "properties": {
+                        "value": { "$ref": "#/$defs/number" }
+                      }
+                    }
+                    """),
+            ]);
+
+        Assert.Single(left.Except(right));
+    }
+
+    [Fact]
     public void From_rejects_more_than_256_declarations()
     {
         var declarations = Enumerable.Range(0, 257)
@@ -1674,6 +1862,65 @@ public sealed class AIFunctionDeclarationSetTests
             leftDeclarations.Skip(96).Select(declaration => declaration.Name),
             remainder.Select(declaration => declaration.Name));
         Assert.Equal(left.Count, intersection.Count + remainder.Count);
+    }
+
+    [Fact]
+    public void Intersect_matches_a_unique_candidate_when_the_right_set_is_larger()
+    {
+        const string schema = """{ "type": "object" }""";
+        var matching = Declaration("get_weather", "Get weather.", schema);
+        var left = AIFunctionDeclarationSet.From(
+            [
+                matching,
+                Declaration("list_users", "List users.", schema),
+            ]);
+        var right = AIFunctionDeclarationSet.From(
+            [
+                Declaration("create_invoice", "Create an invoice.", schema),
+                Declaration("get_weather", "Get weather.", schema),
+                Declaration("delete_user", "Delete a user.", schema),
+            ]);
+
+        var intersection = left.Intersect(right);
+
+        Assert.Same(matching, Assert.Single(intersection));
+    }
+
+    [Fact]
+    public void Intersect_matches_unique_candidates_when_the_left_set_is_larger()
+    {
+        const string schema = """{ "type": "object" }""";
+        var matching = Declaration("get_weather", "Get weather.", schema);
+        var left = AIFunctionDeclarationSet.From(
+            [
+                Declaration("create_invoice", "Create an invoice.", schema),
+                matching,
+                Declaration("delete_user", "Delete a user.", schema),
+            ]);
+        var right = AIFunctionDeclarationSet.From(
+            [Declaration("get_weather", "Get weather.", schema)]);
+
+        var intersection = left.Intersect(right);
+
+        Assert.Same(matching, Assert.Single(intersection));
+    }
+
+    [Fact]
+    public void Intersect_returns_empty_when_all_candidates_fail_the_score_threshold()
+    {
+        const string schema = """{ "type": "object" }""";
+        var left = AIFunctionDeclarationSet.From(
+            [
+                Declaration("get_weather", "Get weather.", schema),
+                Declaration("list_users", "List users.", schema),
+            ]);
+        var right = AIFunctionDeclarationSet.From(
+            [
+                Declaration("create_invoice", "Create an invoice.", schema),
+                Declaration("delete_user", "Delete a user.", schema),
+            ]);
+
+        Assert.Empty(left.Intersect(right));
     }
 
     [Fact]

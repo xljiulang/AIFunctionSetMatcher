@@ -14,6 +14,8 @@
 
 集合首次执行 `Except` 或 `Intersect` 时会线程安全地构建声明匹配索引，后续操作复用该索引。进程级服务端集合适合长期持有，请求级集合则只为本次请求构建一次索引。
 
+匹配过程使用调用级池化工作数组；当每个左侧声明最多只有一个无歧义候选时，会跳过 Hungarian 全局分配。请求侧索引使用 canonical UTF-8 Schema 指纹和紧凑 token 集合，避免保留十六进制签名字符串与每个文本的 `HashSet` 桶结构。
+
 ## 基本用法
 
 ```csharp
@@ -108,4 +110,4 @@ dotnet run --project benchmarks/AIFunctionSetMatcher.Benchmarks/AIFunctionSetMat
 dotnet run --project benchmarks/AIFunctionSetMatcher.Benchmarks/AIFunctionSetMatcher.Benchmarks.csproj --configuration Release --no-build -- --list flat
 ```
 
-本机原始基线见 [`docs/benchmarks/2026-10-29-ai-function-set-matcher.md`](docs/benchmarks/2026-10-29-ai-function-set-matcher.md)，匹配索引缓存优化结果见 [`docs/benchmarks/2026-10-30-ai-function-set-matcher-optimization.md`](docs/benchmarks/2026-10-30-ai-function-set-matcher-optimization.md)。基准结果依赖 CPU、运行时和后台负载，不用于 CI 硬性性能断言。
+本机原始基线见 [`docs/benchmarks/2026-10-29-ai-function-set-matcher.md`](docs/benchmarks/2026-10-29-ai-function-set-matcher.md)，匹配索引缓存优化结果见 [`docs/benchmarks/2026-10-30-ai-function-set-matcher-optimization.md`](docs/benchmarks/2026-10-30-ai-function-set-matcher-optimization.md)，全链路分配优化结果见 [`docs/benchmarks/2026-10-30-ai-function-set-matcher-allocation-optimization.md`](docs/benchmarks/2026-10-30-ai-function-set-matcher-allocation-optimization.md)。基准结果依赖 CPU、运行时和后台负载，不用于 CI 硬性性能断言。

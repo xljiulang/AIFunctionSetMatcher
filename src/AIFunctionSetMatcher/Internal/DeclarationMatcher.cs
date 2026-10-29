@@ -16,16 +16,14 @@ internal static class DeclarationMatcher
     /// <param name="right">右侧函数声明匹配索引。</param>
     /// <param name="options">匹配选项。</param>
     /// <returns>按左侧原始顺序排列的未匹配声明。</returns>
-    public static IReadOnlyList<AIFunctionDeclaration> FindUnmatched(
+    public static AIFunctionDeclaration[] FindUnmatched(
         DeclarationMatchIndex left,
         DeclarationMatchIndex right,
         AIFunctionMatchOptions options)
     {
-        var matchedLeft = FindMatchedIndexes(left, right, options);
-        return left.Profiles
-            .Where((_, index) => !matchedLeft.Contains(index))
-            .Select(profile => profile.Declaration)
-            .ToArray();
+        Span<bool> matchedLeft = stackalloc bool[left.Profiles.Count];
+        FindMatchedIndexes(left, right, options, matchedLeft);
+        return CreateResult(left, matchedLeft, keepMatched: false);
     }
 
     /// <summary>
@@ -35,68 +33,73 @@ internal static class DeclarationMatcher
     /// <param name="right">右侧函数声明匹配索引。</param>
     /// <param name="options">匹配选项。</param>
     /// <returns>按左侧原始顺序排列的匹配声明。</returns>
-    public static IReadOnlyList<AIFunctionDeclaration> FindMatched(
+    public static AIFunctionDeclaration[] FindMatched(
         DeclarationMatchIndex left,
         DeclarationMatchIndex right,
         AIFunctionMatchOptions options)
     {
-        var matchedLeft = FindMatchedIndexes(left, right, options);
-        return left.Profiles
-            .Where((_, index) => matchedLeft.Contains(index))
-            .Select(profile => profile.Declaration)
-            .ToArray();
+        Span<bool> matchedLeft = stackalloc bool[left.Profiles.Count];
+        FindMatchedIndexes(left, right, options, matchedLeft);
+        return CreateResult(left, matchedLeft, keepMatched: true);
     }
 
     /// <summary>
-    /// 计算左侧集合中成功匹配项的下标。
+    /// 计算左侧集合中成功匹配项的下标标记。
     /// </summary>
     /// <param name="left">左侧函数声明匹配索引。</param>
     /// <param name="right">右侧函数声明匹配索引。</param>
     /// <param name="options">匹配选项。</param>
-    /// <returns>左侧匹配下标集合。</returns>
-    private static HashSet<int> FindMatchedIndexes(
+    /// <param name="matchedLeft">接收左侧匹配下标的栈上标记。</param>
+    private static void FindMatchedIndexes(
         DeclarationMatchIndex left,
         DeclarationMatchIndex right,
-        AIFunctionMatchOptions options)
+        AIFunctionMatchOptions options,
+        Span<bool> matchedLeft)
     {
-        var matchedLeft = new HashSet<int>();
         if (left.Profiles.Count == 0 || right.Profiles.Count == 0)
         {
-            return matchedLeft;
+            return;
         }
 
         ValidateSchemaSizes(left, right, options.MaximumSchemaBytes);
 
-        foreach (var (signature, leftIndexes) in left.GroupsBySchemaSignature)
+        foreach (var (fingerprint, leftIndexes) in left.GroupsByFingerprint)
         {
-            if (!right.GroupsBySchemaSignature.TryGetValue(
-                signature,
+            if (!right.GroupsByFingerprint.TryGetValue(
+                fingerprint,
                 out var rightIndexes))
             {
                 continue;
             }
 
-            var scores = BuildScoreMatrix(
+            using var workspace = new MatchWorkspace(
+                leftIndexes.Count,
+                rightIndexes.Count);
+            var hasUniqueCandidates = BuildScoreMatrix(
                 left.Profiles,
                 leftIndexes,
                 right.Profiles,
                 rightIndexes,
-                options);
-            var assignment = MaximumWeightAssignment.Find(
+                options,
+                workspace);
+            if (hasUniqueCandidates &&
+                TryApplyUniqueCandidates(
+                    leftIndexes,
+                    rightIndexes.Count,
+                    workspace,
+                    matchedLeft))
+            {
+                continue;
+            }
+
+            MaximumWeightAssignment.Find(
                 leftIndexes.Count,
                 rightIndexes.Count,
-                scores);
-
-            foreach (var (localLeft, localRight) in assignment)
-            {
-                if (scores[localLeft, localRight] >= options.MinimumMatchScore)
-                {
-                    matchedLeft.Add(leftIndexes[localLeft]);
-                }
-            }
+                workspace,
+                options.MinimumMatchScore,
+                leftIndexes,
+                matchedLeft);
         }
-
-        return matchedLeft;
     }
 
     /// <summary>
@@ -137,71 +140,135 @@ internal static class DeclarationMatcher
     /// <param name="rightProfiles">右侧全部匹配档案。</param>
     /// <param name="rightIndexes">当前分组的右侧下标。</param>
     /// <param name="options">匹配选项。</param>
-    /// <returns>无效候选为 -1 的分数矩阵。</returns>
-    private static double[,] BuildScoreMatrix(
+    /// <param name="workspace">当前分组的池化工作数组。</param>
+    /// <returns>每个左侧最多只有一个合格候选时返回 <see langword="true"/>。</returns>
+    private static bool BuildScoreMatrix(
         IReadOnlyList<DeclarationMatchProfile> leftProfiles,
         IReadOnlyList<int> leftIndexes,
         IReadOnlyList<DeclarationMatchProfile> rightProfiles,
         IReadOnlyList<int> rightIndexes,
-        AIFunctionMatchOptions options)
+        AIFunctionMatchOptions options,
+        MatchWorkspace workspace)
     {
-        var scores = new double[leftIndexes.Count, rightIndexes.Count];
+        var columnCount = rightIndexes.Count;
+        var hasUniqueCandidates = true;
         for (var localLeft = 0; localLeft < leftIndexes.Count; localLeft++)
         {
             var left = leftProfiles[leftIndexes[localLeft]];
             var bestScore = -1.0;
             var secondScore = -1.0;
+            var candidateCount = 0;
+            var candidateRight = -1;
+            var rowOffset = localLeft * columnCount;
 
-            for (var localRight = 0; localRight < rightIndexes.Count; localRight++)
+            for (var localRight = 0; localRight < columnCount; localRight++)
             {
                 var right = rightProfiles[rightIndexes[localRight]];
-                if (!IsDescriptionCompatible(left, right, options))
+                var scoreIndex = rowOffset + localRight;
+                if (!IsDescriptionCompatible(
+                    left,
+                    right,
+                    options,
+                    out var descriptionScore))
                 {
-                    scores[localLeft, localRight] = -1;
+                    workspace.Scores[scoreIndex] = -1;
                     continue;
                 }
 
                 var nameScore = TextSimilarity.ComputeNameSimilarity(
                     left.NameTokens,
                     right.NameTokens);
-                var descriptionScore = left.HasDescription
-                    ? TextSimilarity.ComputeDescriptionJaccard(
-                        left.DescriptionTokens,
-                        right.DescriptionTokens)
-                    : 0;
                 var score = left.HasDescription
                     ? (0.75 * nameScore) + (0.25 * descriptionScore)
                     : nameScore;
-                scores[localLeft, localRight] = score;
+                workspace.Scores[scoreIndex] = score;
 
-                if (score >= options.MinimumMatchScore)
+                if (score < options.MinimumMatchScore)
                 {
-                    if (score > bestScore)
-                    {
-                        secondScore = bestScore;
-                        bestScore = score;
-                    }
-                    else if (score > secondScore)
-                    {
-                        secondScore = score;
-                    }
+                    continue;
+                }
+
+                candidateCount++;
+                candidateRight = candidateCount == 1 ? localRight : -1;
+                if (score > bestScore)
+                {
+                    secondScore = bestScore;
+                    bestScore = score;
+                }
+                else if (score > secondScore)
+                {
+                    secondScore = score;
                 }
             }
 
             if (secondScore >= options.MinimumMatchScore &&
                 bestScore - secondScore < options.MinimumScoreGap)
             {
-                for (var localRight = 0; localRight < rightIndexes.Count; localRight++)
+                for (var localRight = 0; localRight < columnCount; localRight++)
                 {
-                    if (scores[localLeft, localRight] >= options.MinimumMatchScore)
+                    var scoreIndex = rowOffset + localRight;
+                    if (workspace.Scores[scoreIndex] >= options.MinimumMatchScore)
                     {
-                        scores[localLeft, localRight] = -1;
+                        workspace.Scores[scoreIndex] = -1;
                     }
                 }
+
+                candidateCount = 0;
+                candidateRight = -1;
+            }
+
+            workspace.CandidateCounts[localLeft] = candidateCount;
+            workspace.UniqueCandidateByLeft[localLeft] = candidateRight;
+            hasUniqueCandidates &= candidateCount <= 1;
+        }
+
+        return hasUniqueCandidates;
+    }
+
+    /// <summary>
+    /// 在候选和右侧使用均唯一时直接应用匹配。
+    /// </summary>
+    /// <param name="leftIndexes">当前分组的左侧下标。</param>
+    /// <param name="rightCount">当前分组的右侧数量。</param>
+    /// <param name="workspace">当前分组的池化工作数组。</param>
+    /// <param name="matchedLeft">接收左侧匹配下标的栈上标记。</param>
+    /// <returns>成功应用唯一候选匹配时返回 <see langword="true"/>。</returns>
+    private static bool TryApplyUniqueCandidates(
+        IReadOnlyList<int> leftIndexes,
+        int rightCount,
+        MatchWorkspace workspace,
+        Span<bool> matchedLeft)
+    {
+        for (var right = 0; right < rightCount; right++)
+        {
+            workspace.RightUniqueCounts[right] = 0;
+        }
+
+        for (var localLeft = 0; localLeft < leftIndexes.Count; localLeft++)
+        {
+            if (workspace.CandidateCounts[localLeft] != 1)
+            {
+                continue;
+            }
+
+            var localRight = workspace.UniqueCandidateByLeft[localLeft];
+            if (localRight < 0 ||
+                localRight >= rightCount ||
+                ++workspace.RightUniqueCounts[localRight] > 1)
+            {
+                return false;
             }
         }
 
-        return scores;
+        for (var localLeft = 0; localLeft < leftIndexes.Count; localLeft++)
+        {
+            if (workspace.CandidateCounts[localLeft] == 1)
+            {
+                matchedLeft[leftIndexes[localLeft]] = true;
+            }
+        }
+
+        return true;
     }
 
     /// <summary>
@@ -210,25 +277,64 @@ internal static class DeclarationMatcher
     /// <param name="expected">权威匹配档案。</param>
     /// <param name="actual">客户端匹配档案。</param>
     /// <param name="options">匹配选项。</param>
+    /// <param name="descriptionScore">接收双方描述的 Jaccard 相似度。</param>
     /// <returns>描述允许参与匹配时返回 <see langword="true"/>。</returns>
     private static bool IsDescriptionCompatible(
         DeclarationMatchProfile expected,
         DeclarationMatchProfile actual,
-        AIFunctionMatchOptions options)
+        AIFunctionMatchOptions options,
+        out double descriptionScore)
     {
         if (expected.HasDescription != actual.HasDescription)
         {
+            descriptionScore = 0;
             return false;
         }
 
         if (!expected.HasDescription)
         {
+            descriptionScore = 0;
             return true;
         }
 
-        return TextSimilarity.ComputeDescriptionJaccard(
+        descriptionScore = TextSimilarity.ComputeDescriptionJaccard(
             expected.DescriptionTokens,
-            actual.DescriptionTokens) >= options.MinimumDescriptionSimilarity;
+            actual.DescriptionTokens);
+        return descriptionScore >= options.MinimumDescriptionSimilarity;
+    }
+
+    /// <summary>
+    /// 根据左侧匹配标记创建精确大小的结果数组。
+    /// </summary>
+    /// <param name="left">左侧函数声明匹配索引。</param>
+    /// <param name="matchedLeft">左侧匹配下标标记。</param>
+    /// <param name="keepMatched">保留匹配项而不是未匹配项时为 <see langword="true"/>。</param>
+    /// <returns>按左侧原始顺序排列的声明数组。</returns>
+    private static AIFunctionDeclaration[] CreateResult(
+        DeclarationMatchIndex left,
+        ReadOnlySpan<bool> matchedLeft,
+        bool keepMatched)
+    {
+        var resultCount = 0;
+        for (var index = 0; index < left.Profiles.Count; index++)
+        {
+            if (matchedLeft[index] == keepMatched)
+            {
+                resultCount++;
+            }
+        }
+
+        var result = new AIFunctionDeclaration[resultCount];
+        var resultIndex = 0;
+        for (var index = 0; index < left.Profiles.Count; index++)
+        {
+            if (matchedLeft[index] == keepMatched)
+            {
+                result[resultIndex++] = left.Profiles[index].Declaration;
+            }
+        }
+
+        return result;
     }
 
     /// <summary>
@@ -237,129 +343,162 @@ internal static class DeclarationMatcher
     private static class MaximumWeightAssignment
     {
         /// <summary>
-        /// 查找左右分组之间的全局匹配对。
+        /// 查找左右分组之间的全局匹配对，并写入左侧匹配标记。
         /// </summary>
         /// <param name="rowCount">左侧分组声明数量。</param>
         /// <param name="columnCount">右侧分组声明数量。</param>
-        /// <param name="scores">分组候选分数矩阵。</param>
-        /// <returns>匹配的左右分组内下标对。</returns>
-        public static IReadOnlyList<(int Left, int Right)> Find(
+        /// <param name="workspace">当前分组的池化工作数组。</param>
+        /// <param name="minimumScore">合格匹配所需的最低分数。</param>
+        /// <param name="leftIndexes">当前分组的左侧全局下标。</param>
+        /// <param name="matchedLeft">接收左侧匹配下标的栈上标记。</param>
+        public static void Find(
             int rowCount,
             int columnCount,
-            double[,] scores)
+            MatchWorkspace workspace,
+            double minimumScore,
+            IReadOnlyList<int> leftIndexes,
+            Span<bool> matchedLeft)
         {
-            var size = Math.Max(rowCount, columnCount);
-            var cost = new double[size + 1, size + 1];
-            for (var row = 1; row <= size; row++)
+            var size = workspace.MatrixSize;
+            Array.Clear(workspace.RowPotential, 0, size + 1);
+            Array.Clear(workspace.ColumnPotential, 0, size + 1);
+            Array.Clear(workspace.MatchedRow, 0, size + 1);
+
+            FindMinimumCostAssignment(
+                rowCount,
+                columnCount,
+                workspace,
+                size);
+
+            for (var column = 1; column <= size; column++)
             {
-                for (var column = 1; column <= size; column++)
+                var row = workspace.MatchedRow[column];
+                if (row == 0 || row > rowCount || column > columnCount)
                 {
-                    cost[row, column] =
-                        row <= rowCount &&
-                        column <= columnCount &&
-                        scores[row - 1, column - 1] >= 0
-                            ? 1 - scores[row - 1, column - 1]
-                            : InvalidCost;
+                    continue;
+                }
+
+                var score = workspace.Scores[(row - 1) * columnCount + (column - 1)];
+                if (score >= minimumScore)
+                {
+                    matchedLeft[leftIndexes[row - 1]] = true;
                 }
             }
-
-            var assignment = FindMinimumCostAssignment(cost, size);
-            return assignment
-                .Where(pair => pair.Left < rowCount && pair.Right < columnCount)
-                .ToArray();
         }
 
         /// <summary>
         /// 使用 Hungarian 算法计算最小成本完全分配。
         /// </summary>
-        /// <param name="cost">补边后的方阵成本。</param>
-        /// <param name="size">方阵边长。</param>
-        /// <returns>左右分组内下标分配结果。</returns>
-        private static IReadOnlyList<(int Left, int Right)> FindMinimumCostAssignment(
-            double[,] cost,
+        /// <param name="rowCount">实际左侧分组行数。</param>
+        /// <param name="columnCount">实际右侧分组列数。</param>
+        /// <param name="workspace">当前分组的池化工作数组。</param>
+        /// <param name="size">补边后的方阵边长。</param>
+        private static void FindMinimumCostAssignment(
+            int rowCount,
+            int columnCount,
+            MatchWorkspace workspace,
             int size)
         {
-            var rowPotential = new double[size + 1];
-            var columnPotential = new double[size + 1];
-            var matchedRow = new int[size + 1];
-            var previousColumn = new int[size + 1];
-            var minimum = new double[size + 1];
-            var used = new bool[size + 1];
-
             for (var row = 1; row <= size; row++)
             {
-                Array.Fill(minimum, double.PositiveInfinity);
-                Array.Fill(used, false);
-                matchedRow[0] = row;
+                Array.Fill(
+                    workspace.Minimum,
+                    double.PositiveInfinity,
+                    0,
+                    size + 1);
+                Array.Fill(workspace.Used, false, 0, size + 1);
+                workspace.MatchedRow[0] = row;
                 var currentColumn = 0;
 
                 do
                 {
-                    used[currentColumn] = true;
-                    var currentRow = matchedRow[currentColumn];
+                    workspace.Used[currentColumn] = true;
+                    var currentRow = workspace.MatchedRow[currentColumn];
                     var delta = double.PositiveInfinity;
                     var nextColumn = 0;
 
                     for (var column = 1; column <= size; column++)
                     {
-                        if (used[column])
+                        if (workspace.Used[column])
                         {
                             continue;
                         }
 
                         var reducedCost =
-                            cost[currentRow, column] -
-                            rowPotential[currentRow] -
-                            columnPotential[column];
-                        if (reducedCost < minimum[column])
+                            GetCost(
+                                currentRow,
+                                column,
+                                rowCount,
+                                columnCount,
+                                workspace.Scores) -
+                            workspace.RowPotential[currentRow] -
+                            workspace.ColumnPotential[column];
+                        if (reducedCost < workspace.Minimum[column])
                         {
-                            minimum[column] = reducedCost;
-                            previousColumn[column] = currentColumn;
+                            workspace.Minimum[column] = reducedCost;
+                            workspace.PreviousColumn[column] = currentColumn;
                         }
 
-                        if (minimum[column] < delta)
+                        if (workspace.Minimum[column] < delta)
                         {
-                            delta = minimum[column];
+                            delta = workspace.Minimum[column];
                             nextColumn = column;
                         }
                     }
 
                     for (var column = 0; column <= size; column++)
                     {
-                        if (used[column])
+                        if (workspace.Used[column])
                         {
-                            rowPotential[matchedRow[column]] += delta;
-                            columnPotential[column] -= delta;
+                            workspace.RowPotential[workspace.MatchedRow[column]] += delta;
+                            workspace.ColumnPotential[column] -= delta;
                         }
                         else
                         {
-                            minimum[column] -= delta;
+                            workspace.Minimum[column] -= delta;
                         }
                     }
 
                     currentColumn = nextColumn;
                 }
-                while (matchedRow[currentColumn] != 0);
+                while (workspace.MatchedRow[currentColumn] != 0);
 
                 do
                 {
-                    var nextColumn = previousColumn[currentColumn];
-                    matchedRow[currentColumn] = matchedRow[nextColumn];
+                    var nextColumn = workspace.PreviousColumn[currentColumn];
+                    workspace.MatchedRow[currentColumn] = workspace.MatchedRow[nextColumn];
                     currentColumn = nextColumn;
                 }
                 while (currentColumn != 0);
             }
+        }
 
-            var assignments = new List<(int Left, int Right)>(size);
-            for (var column = 1; column <= size; column++)
+        /// <summary>
+        /// 按实际分数或补边无效成本计算 Hungarian 归约前的成本。
+        /// </summary>
+        /// <param name="row">一基左侧行号。</param>
+        /// <param name="column">一基右侧列号。</param>
+        /// <param name="rowCount">实际左侧分组行数。</param>
+        /// <param name="columnCount">实际右侧分组列数。</param>
+        /// <param name="scores">按行优先存储的候选分数矩阵。</param>
+        /// <returns>有效候选为 <c>1 - score</c>，否则为固定无效成本。</returns>
+        private static double GetCost(
+            int row,
+            int column,
+            int rowCount,
+            int columnCount,
+            double[] scores)
+        {
+            if (row <= rowCount && column <= columnCount)
             {
-                if (matchedRow[column] != 0)
+                var score = scores[(row - 1) * columnCount + (column - 1)];
+                if (score >= 0)
                 {
-                    assignments.Add((matchedRow[column] - 1, column - 1));
+                    return 1 - score;
                 }
             }
 
-            return assignments;
+            return InvalidCost;
         }
     }
 }

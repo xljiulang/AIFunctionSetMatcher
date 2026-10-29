@@ -19,6 +19,8 @@ public class SetOperationBenchmarks
     private AIFunctionDeclarationSet renamedRight = null!;
     private AIFunctionDeclarationSet rejectedRight = null!;
     private AIFunctionDeclarationSet disjointRight = null!;
+    private AIFunctionDeclarationSet fallbackLeft = null!;
+    private AIFunctionDeclarationSet fallbackRight = null!;
 
     /// <summary>
     /// 获取或设置每个集合中的函数数量。
@@ -64,6 +66,16 @@ public class SetOperationBenchmarks
                 schemaElement));
         disjointRight = CreateSet(
             index => CreateDeclaration($"other_{index:D3}", index, schemaElement));
+        fallbackLeft = CreateSet(
+            index => AIFunctionFactory.CreateDeclaration(
+                $"tool_alpha_{index:D3}",
+                "Process benchmark records.",
+                schemaElement));
+        fallbackRight = CreateSet(
+            index => AIFunctionFactory.CreateDeclaration(
+                $"mcp__tool_alpha_{index:D3}",
+                "Process benchmark records.",
+                schemaElement));
     }
 
     /// <summary>
@@ -109,6 +121,24 @@ public class SetOperationBenchmarks
     public void Except_DescriptionMismatch()
     {
         consumer.Consume(left.Except(rejectedRight));
+    }
+
+    /// <summary>
+    /// 测量多个合格候选迫使 Hungarian 全局分配时的交集。
+    /// </summary>
+    [Benchmark]
+    public void Intersect_HungarianFallback()
+    {
+        consumer.Consume(fallbackLeft.Intersect(fallbackRight));
+    }
+
+    /// <summary>
+    /// 测量为请求声明创建不可变集合但尚未构建匹配索引的路径。
+    /// </summary>
+    [Benchmark]
+    public void From_RequestDeclarations()
+    {
+        consumer.Consume(AIFunctionDeclarationSet.From(exactRightDeclarations));
     }
 
     /// <summary>

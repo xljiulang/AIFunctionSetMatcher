@@ -9,10 +9,10 @@ internal sealed class DeclarationMatchIndex
 {
     private DeclarationMatchIndex(
         IReadOnlyList<DeclarationMatchProfile> profiles,
-        IReadOnlyDictionary<string, IReadOnlyList<int>> groupsBySchemaSignature)
+        IReadOnlyDictionary<SchemaFingerprint, List<int>> groupsByFingerprint)
     {
         Profiles = profiles;
-        GroupsBySchemaSignature = groupsBySchemaSignature;
+        GroupsByFingerprint = groupsByFingerprint;
     }
 
     /// <summary>
@@ -21,9 +21,9 @@ internal sealed class DeclarationMatchIndex
     public IReadOnlyList<DeclarationMatchProfile> Profiles { get; }
 
     /// <summary>
-    /// 获取 Schema 语义签名到声明下标的只读分组。
+    /// 获取 Schema 语义指纹到声明下标的只读分组。
     /// </summary>
-    public IReadOnlyDictionary<string, IReadOnlyList<int>> GroupsBySchemaSignature { get; }
+    public IReadOnlyDictionary<SchemaFingerprint, List<int>> GroupsByFingerprint { get; }
 
     /// <summary>
     /// 为声明集合构建匹配索引。
@@ -34,27 +34,20 @@ internal sealed class DeclarationMatchIndex
         IReadOnlyList<AIFunctionDeclaration> declarations)
     {
         var profiles = new DeclarationMatchProfile[declarations.Count];
-        var groups = new Dictionary<string, List<int>>(StringComparer.Ordinal);
+        var groups = new Dictionary<SchemaFingerprint, List<int>>();
         for (var index = 0; index < declarations.Count; index++)
         {
             var profile = DeclarationMatchProfile.Create(declarations[index]);
             profiles[index] = profile;
-            if (!groups.TryGetValue(profile.SchemaSignature, out var indexes))
+            if (!groups.TryGetValue(profile.SchemaFingerprint, out var indexes))
             {
                 indexes = [];
-                groups.Add(profile.SchemaSignature, indexes);
+                groups.Add(profile.SchemaFingerprint, indexes);
             }
 
             indexes.Add(index);
         }
 
-        var readOnlyGroups =
-            new Dictionary<string, IReadOnlyList<int>>(StringComparer.Ordinal);
-        foreach (var (signature, indexes) in groups)
-        {
-            readOnlyGroups.Add(signature, indexes.ToArray());
-        }
-
-        return new DeclarationMatchIndex(profiles, readOnlyGroups);
+        return new DeclarationMatchIndex(profiles, groups);
     }
 }
