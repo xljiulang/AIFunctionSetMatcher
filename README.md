@@ -10,7 +10,9 @@
 <PackageReference Include="Microsoft.Extensions.AI.Abstractions" Version="10.11.0" />
 ```
 
-`AIFunctionDeclarationSet` 实现 `IReadOnlyCollection<AIFunctionDeclaration>`，本身不可变。
+`AIFunctionDeclarationSet` 实现 `IReadOnlyCollection<AIFunctionDeclaration>`。集合直接保留调用方传入的声明实例；声明加入集合后，调用方必须保证 Name、Description、JsonSchema 和 ReturnJsonSchema 不再变化。
+
+集合首次执行 `Except` 或 `Intersect` 时会线程安全地构建声明匹配索引，后续操作复用该索引。进程级服务端集合适合长期持有，请求级集合则只为本次请求构建一次索引。
 
 ## 基本用法
 
@@ -93,6 +95,8 @@ dotnet test AIFunctionSetMatcher.slnx --configuration Release
 ## 性能基准
 
 BenchmarkDotNet 项目位于 `benchmarks/AIFunctionSetMatcher.Benchmarks`，覆盖 `From`、`Union`、`Except` 和 `Intersect` 的公开 API 路径。
+
+SetOperation 基准同时包含双方集合均已缓存，以及服务端集合复用缓存、请求集合每次新建的两种场景。
 
 ```powershell
 dotnet run --project benchmarks/AIFunctionSetMatcher.Benchmarks/AIFunctionSetMatcher.Benchmarks.csproj --configuration Release -- --filter '*'

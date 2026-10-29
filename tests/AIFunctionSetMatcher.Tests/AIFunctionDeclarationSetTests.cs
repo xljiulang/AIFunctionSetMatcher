@@ -39,7 +39,7 @@ public sealed class AIFunctionDeclarationSetTests
     }
 
     [Fact]
-    public void From_functions_stores_declarations_without_execution_implementation()
+    public void From_functions_preserves_the_original_function_instances()
     {
         AIFunction function = AIFunctionFactory.Create(
             () => "sunny",
@@ -49,7 +49,7 @@ public sealed class AIFunctionDeclarationSetTests
         var declaration = Assert.Single(
             AIFunctionDeclarationSet.From(new[] { function }));
 
-        Assert.NotSame(function, declaration);
+        Assert.Same(function, declaration);
         Assert.Equal("get_weather", declaration.Name);
         Assert.Equal("Get the weather for a city.", declaration.Description);
     }
@@ -1534,6 +1534,116 @@ public sealed class AIFunctionDeclarationSetTests
     }
 
     [Fact]
+    public void Matching_reuses_the_cached_profiles()
+    {
+        using var schema = JsonDocument.Parse("""{ "type": "object" }""");
+        var leftDeclaration = new CountingDeclaration(
+            "get_weather",
+            "Get current weather.",
+            schema.RootElement.Clone());
+        var rightDeclaration = new CountingDeclaration(
+            "get_weather",
+            "Get current weather.",
+            schema.RootElement.Clone());
+        var left = AIFunctionDeclarationSet.From([leftDeclaration]);
+        var right = AIFunctionDeclarationSet.From([rightDeclaration]);
+        leftDeclaration.ResetReadCounts();
+        rightDeclaration.ResetReadCounts();
+
+        left.Except(right);
+        var leftCounts = leftDeclaration.GetReadCounts();
+        var rightCounts = rightDeclaration.GetReadCounts();
+
+        left.Except(right);
+
+        Assert.Equal(leftCounts, leftDeclaration.GetReadCounts());
+        Assert.Equal(rightCounts, rightDeclaration.GetReadCounts());
+    }
+
+    [Fact]
+    public void Concurrent_first_matching_builds_each_profile_once()
+    {
+        using var schema = JsonDocument.Parse("""{ "type": "object" }""");
+        var leftDeclaration = new CountingDeclaration(
+            "get_weather",
+            "Get current weather.",
+            schema.RootElement.Clone());
+        var rightDeclaration = new CountingDeclaration(
+            "get_weather",
+            "Get current weather.",
+            schema.RootElement.Clone());
+        var left = AIFunctionDeclarationSet.From([leftDeclaration]);
+        var right = AIFunctionDeclarationSet.From([rightDeclaration]);
+        leftDeclaration.ResetReadCounts();
+        rightDeclaration.ResetReadCounts();
+
+        Parallel.For(0, 32, _ => left.Except(right));
+
+        Assert.Equal(1, leftDeclaration.NameReadCount);
+        Assert.Equal(1, rightDeclaration.NameReadCount);
+    }
+
+    [Fact]
+    public void Cached_profiles_still_honor_per_call_schema_size_limits()
+    {
+        const string schema =
+            """
+            {
+              "type": "object",
+              "description": "A schema large enough to exceed a small test limit.",
+              "properties": {
+                "query": { "type": "string" }
+              }
+            }
+            """;
+        var left = AIFunctionDeclarationSet.From(
+            [Declaration("search", "Search records.", schema)]);
+        var right = AIFunctionDeclarationSet.From(
+            [Declaration("search", "Search records.", schema)]);
+
+        Assert.Single(
+            left.Intersect(
+                right,
+                new AIFunctionMatchOptions { MaximumSchemaBytes = 10_000 }));
+
+        var exception = Assert.Throws<AIFunctionDeclarationSetParseException>(
+            () => left.Intersect(
+                right,
+                new AIFunctionMatchOptions { MaximumSchemaBytes = 32 }));
+
+        Assert.Contains("JsonSchema", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Cached_profiles_still_honor_per_call_description_thresholds()
+    {
+        const string schema = """{ "type": "object" }""";
+        var left = AIFunctionDeclarationSet.From(
+            [
+                Declaration(
+                    "rank_items",
+                    "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron",
+                    schema),
+            ]);
+        var right = AIFunctionDeclarationSet.From(
+            [
+                Declaration(
+                    "rank_items",
+                    "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi",
+                    schema),
+            ]);
+
+        Assert.Single(
+            left.Intersect(
+                right,
+                new AIFunctionMatchOptions { MinimumDescriptionSimilarity = 0.90 }));
+        Assert.Empty(
+            left.Intersect(
+                right,
+                new AIFunctionMatchOptions { MinimumDescriptionSimilarity = 0.96 }));
+    }
+
+    [Fact]
     public void Intersect_and_Except_preserve_results_for_128_declarations()
     {
         const string schema = """{ "type": "object" }""";
@@ -1609,6 +1719,70 @@ public sealed class AIFunctionDeclarationSetTests
         Assert.Equal(
             ["search_text", "find_record", "search_code", "find_user"],
             intersection.Select(declaration => declaration.Name).ToArray());
+    }
+
+    private sealed class CountingDeclaration : AIFunctionDeclaration
+    {
+        private readonly string description;
+        private readonly string name;
+        private readonly JsonElement schema;
+        private int descriptionReadCount;
+        private int nameReadCount;
+        private int schemaReadCount;
+
+        public CountingDeclaration(
+            string name,
+            string description,
+            JsonElement schema)
+        {
+            this.name = name;
+            this.description = description;
+            this.schema = schema;
+        }
+
+        public int NameReadCount => Volatile.Read(ref nameReadCount);
+
+        public override string Name
+        {
+            get
+            {
+                Interlocked.Increment(ref nameReadCount);
+                return name;
+            }
+        }
+
+        public override string Description
+        {
+            get
+            {
+                Interlocked.Increment(ref descriptionReadCount);
+                return description;
+            }
+        }
+
+        public override JsonElement JsonSchema
+        {
+            get
+            {
+                Interlocked.Increment(ref schemaReadCount);
+                return schema;
+            }
+        }
+
+        public void ResetReadCounts()
+        {
+            Interlocked.Exchange(ref nameReadCount, 0);
+            Interlocked.Exchange(ref descriptionReadCount, 0);
+            Interlocked.Exchange(ref schemaReadCount, 0);
+        }
+
+        public (int Name, int Description, int Schema) GetReadCounts()
+        {
+            return (
+                Volatile.Read(ref nameReadCount),
+                Volatile.Read(ref descriptionReadCount),
+                Volatile.Read(ref schemaReadCount));
+        }
     }
 
     private static AIFunctionDeclaration Declaration(

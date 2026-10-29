@@ -13,6 +13,7 @@ namespace AIFunctionSetMatcher.Benchmarks;
 public class SetOperationBenchmarks
 {
     private readonly Consumer consumer = new();
+    private AIFunctionDeclaration[] exactRightDeclarations = null!;
     private AIFunctionDeclarationSet left = null!;
     private AIFunctionDeclarationSet exactRight = null!;
     private AIFunctionDeclarationSet renamedRight = null!;
@@ -48,8 +49,9 @@ public class SetOperationBenchmarks
 
         left = CreateSet(
             index => CreateDeclaration($"tool_{index:D3}", index, schemaElement));
-        exactRight = CreateSet(
+        exactRightDeclarations = CreateDeclarations(
             index => CreateDeclaration($"tool_{index:D3}", index, schemaElement));
+        exactRight = AIFunctionDeclarationSet.From(exactRightDeclarations);
         renamedRight = CreateSet(
             index => CreateDeclaration(
                 $"mcp__benchmark__tool_{index:D3}",
@@ -109,11 +111,36 @@ public class SetOperationBenchmarks
         consumer.Consume(left.Except(rejectedRight));
     }
 
+    /// <summary>
+    /// 测量复用服务端集合缓存并创建新请求集合时的交集。
+    /// </summary>
+    [Benchmark]
+    public void Intersect_RequestSet()
+    {
+        var requestSet = AIFunctionDeclarationSet.From(exactRightDeclarations);
+        consumer.Consume(left.Intersect(requestSet));
+    }
+
+    /// <summary>
+    /// 测量复用服务端集合缓存并创建新请求集合时的差集。
+    /// </summary>
+    [Benchmark]
+    public void Except_RequestSet()
+    {
+        var requestSet = AIFunctionDeclarationSet.From(exactRightDeclarations);
+        consumer.Consume(left.Except(requestSet));
+    }
+
     private AIFunctionDeclarationSet CreateSet(
         Func<int, AIFunctionDeclaration> createDeclaration)
     {
-        return AIFunctionDeclarationSet.From(
-            Enumerable.Range(0, Count).Select(createDeclaration));
+        return AIFunctionDeclarationSet.From(CreateDeclarations(createDeclaration));
+    }
+
+    private AIFunctionDeclaration[] CreateDeclarations(
+        Func<int, AIFunctionDeclaration> createDeclaration)
+    {
+        return Enumerable.Range(0, Count).Select(createDeclaration).ToArray();
     }
 
     private static AIFunctionDeclaration CreateDeclaration(

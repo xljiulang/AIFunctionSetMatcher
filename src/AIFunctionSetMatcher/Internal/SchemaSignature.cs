@@ -58,11 +58,8 @@ internal static class SchemaSignature
     /// 计算函数声明输入 Schema 的 SHA-256 语义签名。
     /// </summary>
     /// <param name="declaration">要计算签名的函数声明。</param>
-    /// <param name="maximumSchemaBytes">允许的最大 Schema UTF-8 字节数。</param>
-    /// <returns>十六进制 SHA-256 签名。</returns>
-    public static string Compute(
-        AIFunctionDeclaration declaration,
-        int maximumSchemaBytes)
+    /// <returns>Schema 签名和原始 UTF-8 字节数。</returns>
+    public static SchemaSignatureResult Compute(AIFunctionDeclaration declaration)
     {
         var schema = declaration.JsonSchema;
         if (schema.ValueKind != JsonValueKind.Object)
@@ -71,14 +68,11 @@ internal static class SchemaSignature
                 $"函数“{declaration.Name}”的 JsonSchema 必须是 JSON 对象。");
         }
 
-        if (Encoding.UTF8.GetByteCount(schema.GetRawText()) > maximumSchemaBytes)
-        {
-            throw new AIFunctionDeclarationSetParseException(
-                $"函数“{declaration.Name}”的 JsonSchema 超过 {maximumSchemaBytes} 字节限制。");
-        }
-
+        var schemaBytes = Encoding.UTF8.GetByteCount(schema.GetRawText());
         var canonical = CanonicalizeSchema(schema);
-        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonical)));
+        return new SchemaSignatureResult(
+            Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonical))),
+            schemaBytes);
     }
 
     /// <summary>

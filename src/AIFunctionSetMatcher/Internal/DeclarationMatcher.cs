@@ -12,73 +12,74 @@ internal static class DeclarationMatcher
     /// <summary>
     /// 查找左侧集合中无法与右侧集合建立匹配的声明。
     /// </summary>
-    /// <param name="left">左侧函数声明集合。</param>
-    /// <param name="right">右侧函数声明集合。</param>
+    /// <param name="left">左侧函数声明匹配索引。</param>
+    /// <param name="right">右侧函数声明匹配索引。</param>
     /// <param name="options">匹配选项。</param>
     /// <returns>按左侧原始顺序排列的未匹配声明。</returns>
     public static IReadOnlyList<AIFunctionDeclaration> FindUnmatched(
-        IReadOnlyList<AIFunctionDeclaration> left,
-        IReadOnlyList<AIFunctionDeclaration> right,
+        DeclarationMatchIndex left,
+        DeclarationMatchIndex right,
         AIFunctionMatchOptions options)
     {
         var matchedLeft = FindMatchedIndexes(left, right, options);
-        return left
+        return left.Profiles
             .Where((_, index) => !matchedLeft.Contains(index))
+            .Select(profile => profile.Declaration)
             .ToArray();
     }
 
     /// <summary>
     /// 查找左侧集合中能够与右侧集合建立匹配的声明。
     /// </summary>
-    /// <param name="left">左侧函数声明集合。</param>
-    /// <param name="right">右侧函数声明集合。</param>
+    /// <param name="left">左侧函数声明匹配索引。</param>
+    /// <param name="right">右侧函数声明匹配索引。</param>
     /// <param name="options">匹配选项。</param>
     /// <returns>按左侧原始顺序排列的匹配声明。</returns>
     public static IReadOnlyList<AIFunctionDeclaration> FindMatched(
-        IReadOnlyList<AIFunctionDeclaration> left,
-        IReadOnlyList<AIFunctionDeclaration> right,
+        DeclarationMatchIndex left,
+        DeclarationMatchIndex right,
         AIFunctionMatchOptions options)
     {
         var matchedLeft = FindMatchedIndexes(left, right, options);
-        return left
+        return left.Profiles
             .Where((_, index) => matchedLeft.Contains(index))
+            .Select(profile => profile.Declaration)
             .ToArray();
     }
 
     /// <summary>
     /// 计算左侧集合中成功匹配项的下标。
     /// </summary>
-    /// <param name="left">左侧函数声明集合。</param>
-    /// <param name="right">右侧函数声明集合。</param>
+    /// <param name="left">左侧函数声明匹配索引。</param>
+    /// <param name="right">右侧函数声明匹配索引。</param>
     /// <param name="options">匹配选项。</param>
     /// <returns>左侧匹配下标集合。</returns>
     private static HashSet<int> FindMatchedIndexes(
-        IReadOnlyList<AIFunctionDeclaration> left,
-        IReadOnlyList<AIFunctionDeclaration> right,
+        DeclarationMatchIndex left,
+        DeclarationMatchIndex right,
         AIFunctionMatchOptions options)
     {
         var matchedLeft = new HashSet<int>();
-        if (left.Count == 0 || right.Count == 0)
+        if (left.Profiles.Count == 0 || right.Profiles.Count == 0)
         {
             return matchedLeft;
         }
 
-        var leftProfiles = BuildProfiles(left, options.MaximumSchemaBytes);
-        var rightProfiles = BuildProfiles(right, options.MaximumSchemaBytes);
-        var leftGroups = GroupBySchemaSignature(leftProfiles);
-        var rightGroups = GroupBySchemaSignature(rightProfiles);
+        ValidateSchemaSizes(left, right, options.MaximumSchemaBytes);
 
-        foreach (var (signature, leftIndexes) in leftGroups)
+        foreach (var (signature, leftIndexes) in left.GroupsBySchemaSignature)
         {
-            if (!rightGroups.TryGetValue(signature, out var rightIndexes))
+            if (!right.GroupsBySchemaSignature.TryGetValue(
+                signature,
+                out var rightIndexes))
             {
                 continue;
             }
 
             var scores = BuildScoreMatrix(
-                leftProfiles,
+                left.Profiles,
                 leftIndexes,
-                rightProfiles,
+                right.Profiles,
                 rightIndexes,
                 options);
             var assignment = MaximumWeightAssignment.Find(
@@ -99,48 +100,33 @@ internal static class DeclarationMatcher
     }
 
     /// <summary>
-    /// 为声明集合创建单次匹配调用使用的预计算档案。
+    /// 按当前调用选项验证左右匹配索引中的 Schema 大小。
     /// </summary>
-    /// <param name="declarations">要建立档案的函数声明。</param>
-    /// <param name="maximumSchemaBytes">允许的最大 Schema UTF-8 字节数。</param>
-    /// <returns>与输入顺序一致的匹配档案数组。</returns>
-    private static DeclarationMatchProfile[] BuildProfiles(
-        IReadOnlyList<AIFunctionDeclaration> declarations,
+    /// <param name="left">左侧函数声明匹配索引。</param>
+    /// <param name="right">右侧函数声明匹配索引。</param>
+    /// <param name="maximumSchemaBytes">当前调用允许的最大 Schema UTF-8 字节数。</param>
+    private static void ValidateSchemaSizes(
+        DeclarationMatchIndex left,
+        DeclarationMatchIndex right,
         int maximumSchemaBytes)
     {
-        var profiles = new DeclarationMatchProfile[declarations.Count];
-        for (var index = 0; index < declarations.Count; index++)
+        foreach (var profile in left.Profiles)
         {
-            profiles[index] = DeclarationMatchProfile.Create(
-                declarations[index],
-                maximumSchemaBytes);
-        }
-
-        return profiles;
-    }
-
-    /// <summary>
-    /// 按 Schema 语义签名对匹配档案分组。
-    /// </summary>
-    /// <param name="profiles">要分组的匹配档案。</param>
-    /// <returns>签名到原始下标列表的映射。</returns>
-    private static Dictionary<string, List<int>> GroupBySchemaSignature(
-        IReadOnlyList<DeclarationMatchProfile> profiles)
-    {
-        var groups = new Dictionary<string, List<int>>(StringComparer.Ordinal);
-        for (var index = 0; index < profiles.Count; index++)
-        {
-            var signature = profiles[index].SchemaSignature;
-            if (!groups.TryGetValue(signature, out var indexes))
+            if (profile.SchemaByteCount > maximumSchemaBytes)
             {
-                indexes = [];
-                groups.Add(signature, indexes);
+                throw new AIFunctionDeclarationSetParseException(
+                    $"函数“{profile.Declaration.Name}”的 JsonSchema 超过 {maximumSchemaBytes} 字节限制。");
             }
-
-            indexes.Add(index);
         }
 
-        return groups;
+        foreach (var profile in right.Profiles)
+        {
+            if (profile.SchemaByteCount > maximumSchemaBytes)
+            {
+                throw new AIFunctionDeclarationSetParseException(
+                    $"函数“{profile.Declaration.Name}”的 JsonSchema 超过 {maximumSchemaBytes} 字节限制。");
+            }
+        }
     }
 
     /// <summary>

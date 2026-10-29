@@ -6,7 +6,7 @@ using AIFunctionSetMatcher.Internal;
 namespace AIFunctionSetMatcher;
 
 /// <summary>
-/// 表示不可变的 AI 函数声明集合。
+/// 表示不可变的 AI 函数声明集合。集合直接保留调用方声明实例，调用方必须保证声明元数据不再变化。
 /// </summary>
 public sealed class AIFunctionDeclarationSet
     : IReadOnlyCollection<AIFunctionDeclaration>
@@ -15,6 +15,7 @@ public sealed class AIFunctionDeclarationSet
     private const int MaximumPageCount = 64;
     private const int MaximumDocumentBytes = 4 * 1024 * 1024;
     private readonly AIFunctionDeclaration[] _declarations;
+    private readonly Lazy<DeclarationMatchIndex> _matchIndex;
 
     /// <summary>
     /// 初始化函数声明集合。
@@ -23,6 +24,9 @@ public sealed class AIFunctionDeclarationSet
     private AIFunctionDeclarationSet(AIFunctionDeclaration[] declarations)
     {
         _declarations = declarations;
+        _matchIndex = new Lazy<DeclarationMatchIndex>(
+            () => DeclarationMatchIndex.Create(_declarations),
+            LazyThreadSafetyMode.ExecutionAndPublication);
     }
 
     /// <summary>
@@ -31,7 +35,7 @@ public sealed class AIFunctionDeclarationSet
     public int Count => _declarations.Length;
 
     /// <summary>
-    /// 从函数声明序列创建集合。
+    /// 从函数声明序列创建集合，并直接保留原始声明引用。
     /// </summary>
     /// <param name="declarations">要包含的函数声明。</param>
     /// <returns>新的函数声明集合。</returns>
@@ -48,9 +52,7 @@ public sealed class AIFunctionDeclarationSet
                         "函数声明集合不能包含 null。");
                 }
 
-                return declaration is AIFunction function
-                    ? function.AsDeclarationOnly()
-                    : declaration;
+                return declaration;
             }).ToArray();
         if (normalized.Length > MaximumDeclarationCount)
         {
@@ -165,8 +167,8 @@ public sealed class AIFunctionDeclarationSet
         options.Validate();
         return From(
             DeclarationMatcher.FindUnmatched(
-                _declarations,
-                other._declarations,
+                _matchIndex.Value,
+                other._matchIndex.Value,
                 options));
     }
 
@@ -185,8 +187,8 @@ public sealed class AIFunctionDeclarationSet
         options.Validate();
         return From(
             DeclarationMatcher.FindMatched(
-                _declarations,
-                other._declarations,
+                _matchIndex.Value,
+                other._matchIndex.Value,
                 options));
     }
 
