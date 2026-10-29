@@ -29,19 +29,19 @@ internal ref struct TokenSetBuilder
     /// 添加一个非空 token。
     /// </summary>
     /// <param name="token">要添加的 token。</param>
-    public void Add(string token)
+    public void Add(scoped ReadOnlySpan<char> token)
     {
         if (token.Length == 0)
         {
             return;
         }
 
-        token = interner?.Intern(token) ?? token;
+        var value = interner?.Intern(token) ?? token.ToString();
         if (tokenIndex is not null)
         {
-            if (tokenIndex.Add(token))
+            if (tokenIndex.Add(value))
             {
-                AddToBuffer(token);
+                AddToBuffer(value);
             }
 
             return;
@@ -49,13 +49,13 @@ internal ref struct TokenSetBuilder
 
         for (var index = 0; index < count; index++)
         {
-            if (string.Equals(buffer![index], token, StringComparison.Ordinal))
+            if (string.Equals(buffer![index], value, StringComparison.Ordinal))
             {
                 return;
             }
         }
 
-        AddToBuffer(token);
+        AddToBuffer(value);
         if (count <= LinearDeduplicationLimit)
         {
             return;
@@ -66,6 +66,15 @@ internal ref struct TokenSetBuilder
         {
             tokenIndex.Add(buffer![index]);
         }
+    }
+
+    /// <summary>
+    /// 添加一个非空 token 字符串。
+    /// </summary>
+    /// <param name="token">要添加的 token。</param>
+    public void Add(string token)
+    {
+        Add(token.AsSpan());
     }
 
     /// <summary>

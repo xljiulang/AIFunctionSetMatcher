@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Buffers;
 using System.Text;
 
 namespace AIFunctionSetMatcher.Internal;
@@ -227,13 +228,16 @@ internal static class TextSimilarity
     {
         if (word.Length == 1)
         {
-            tokens.Add(word.ToString());
+            tokens.Add(word);
             return;
         }
 
+        Span<char> bigram = stackalloc char[2];
         for (var index = 0; index < word.Length - 1; index++)
         {
-            tokens.Add(string.Concat(word.Slice(index, 1), word.Slice(index + 1, 1)));
+            bigram[0] = word[index];
+            bigram[1] = word[index + 1];
+            tokens.Add(bigram);
         }
     }
 
@@ -279,10 +283,57 @@ internal static class TextSimilarity
         ReadOnlySpan<char> value,
         ref TokenSetBuilder tokens)
     {
-        if (!value.IsEmpty)
+        if (value.IsEmpty)
         {
-            tokens.Add(value.ToString().ToLowerInvariant());
+            return;
         }
+
+        char[]? rented = null;
+        var lowercase = value.Length <= 256
+            ? stackalloc char[value.Length]
+            : rented = ArrayPool<char>.Shared.Rent(value.Length);
+        try
+        {
+            if (TryLowerAscii(value, lowercase))
+            {
+                tokens.Add(lowercase);
+                return;
+            }
+        }
+        finally
+        {
+            if (rented is not null)
+            {
+                ArrayPool<char>.Shared.Return(rented);
+            }
+        }
+
+        var normalized = value.ToString().ToLowerInvariant();
+        tokens.Add(normalized);
+    }
+
+    /// <summary>
+    /// 将纯 ASCII token 无分配地转换为小写形式。
+    /// </summary>
+    /// <param name="value">要转换的 token。</param>
+    /// <param name="lowercase">接收小写字符的目标跨度。</param>
+    /// <returns>token 全部为 ASCII 时返回 <see langword="true"/>。</returns>
+    private static bool TryLowerAscii(
+        ReadOnlySpan<char> value,
+        Span<char> lowercase)
+    {
+        for (var index = 0; index < value.Length; index++)
+        {
+            var character = value[index];
+            if (character > 0x7F)
+            {
+                return false;
+            }
+
+            lowercase[index] = char.ToLowerInvariant(character);
+        }
+
+        return true;
     }
 
     /// <summary>
