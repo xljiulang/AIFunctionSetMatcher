@@ -18,6 +18,8 @@
 
 达到 16 项的 Schema 分组会建立描述或名称 token postings。匹配器先使用稀有 token 生成安全候选超集，再执行精确分数、描述门禁和歧义检查；出现多个真实候选时自动回退到完整 Hungarian 全局分配。Schema 指纹先建立轻量索引，名称和描述档案只在左右共同 Schema 分组首次使用时创建。
 
+请求侧分词会先用规范化字符跨度查询组内 token 驻留表，只有首次出现的 token 才创建字符串。Postings 使用连续数组保存所有声明下标，Schema 分组档案按需初始化；同一分组的名称和描述 token 引用集中在单个 TokenArena 中。
+
 ## 基本用法
 
 ```csharp
@@ -112,4 +114,4 @@ dotnet run --project benchmarks/AIFunctionSetMatcher.Benchmarks/AIFunctionSetMat
 dotnet run --project benchmarks/AIFunctionSetMatcher.Benchmarks/AIFunctionSetMatcher.Benchmarks.csproj --configuration Release --no-build -- --list flat
 ```
 
-本机原始基线见 [`docs/benchmarks/2026-10-29-ai-function-set-matcher.md`](docs/benchmarks/2026-10-29-ai-function-set-matcher.md)，匹配索引缓存优化结果见 [`docs/benchmarks/2026-10-30-ai-function-set-matcher-optimization.md`](docs/benchmarks/2026-10-30-ai-function-set-matcher-optimization.md)，全链路分配优化结果见 [`docs/benchmarks/2026-10-30-ai-function-set-matcher-allocation-optimization.md`](docs/benchmarks/2026-10-30-ai-function-set-matcher-allocation-optimization.md)，稀疏候选优化结果见 [`docs/benchmarks/2026-10-30-ai-function-set-matcher-sparse-candidate-optimization.md`](docs/benchmarks/2026-10-30-ai-function-set-matcher-sparse-candidate-optimization.md)。基准结果依赖 CPU、运行时和后台负载，不用于 CI 硬性性能断言。
+本机原始基线见 [`docs/benchmarks/2026-10-29-ai-function-set-matcher.md`](docs/benchmarks/2026-10-29-ai-function-set-matcher.md)，匹配索引缓存优化结果见 [`docs/benchmarks/2026-10-30-ai-function-set-matcher-optimization.md`](docs/benchmarks/2026-10-30-ai-function-set-matcher-optimization.md)，全链路分配优化结果见 [`docs/benchmarks/2026-10-30-ai-function-set-matcher-allocation-optimization.md`](docs/benchmarks/2026-10-30-ai-function-set-matcher-allocation-optimization.md)，稀疏候选优化结果见 [`docs/benchmarks/2026-10-30-ai-function-set-matcher-sparse-candidate-optimization.md`](docs/benchmarks/2026-10-30-ai-function-set-matcher-sparse-candidate-optimization.md)，请求侧 token/postings 优化结果见 [`docs/benchmarks/2026-10-30-ai-function-set-matcher-request-profile-optimization.md`](docs/benchmarks/2026-10-30-ai-function-set-matcher-request-profile-optimization.md)。基准结果依赖 CPU、运行时和后台负载，不用于 CI 硬性性能断言。
