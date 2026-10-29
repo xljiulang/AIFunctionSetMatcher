@@ -365,7 +365,7 @@ internal static class DeclarationMatcher
         }
 
         var threshold = options.MinimumDescriptionSimilarity;
-        foreach (var (rightCount, _) in queryIndex.DescriptionsByTokenCount)
+        foreach (var (rightCount, _) in queryIndex.DescriptionsByTokenCount.Buckets)
         {
             if (rightCount == 0)
             {
@@ -429,7 +429,7 @@ internal static class DeclarationMatcher
         }
 
         var threshold = options.MinimumMatchScore;
-        foreach (var (rightCount, _) in queryIndex.NamesByTokenCount)
+        foreach (var (rightCount, _) in queryIndex.NamesByTokenCount.Buckets)
         {
             if (rightCount == 0)
             {
@@ -482,7 +482,7 @@ internal static class DeclarationMatcher
     private static void AddRareTokenCandidates(
         TokenSet sourceTokens,
         int pivotCount,
-        IReadOnlyDictionary<string, int[]> postings,
+        CompactPostingIndex postings,
         IReadOnlyList<DeclarationMatchProfile> rightProfiles,
         int rightTokenCount,
         bool useDescriptionTokens,
@@ -496,11 +496,7 @@ internal static class DeclarationMatcher
         for (var pivot = 0; pivot < pivotCount; pivot++)
         {
             var token = sourceTokens.Tokens[workspace.PivotIndexes[pivot]];
-            if (!postings.TryGetValue(token, out var candidates))
-            {
-                continue;
-            }
-
+            var candidates = postings.GetPostings(token);
             foreach (var candidate in candidates)
             {
                 var right = rightProfiles[candidate];
@@ -525,7 +521,7 @@ internal static class DeclarationMatcher
     private static void SelectRareTokens(
         ReadOnlySpan<string> tokens,
         int pivotCount,
-        IReadOnlyDictionary<string, int[]> postings,
+        CompactPostingIndex postings,
         Span<int> pivotIndexes)
     {
         for (var pivot = 0; pivot < pivotCount; pivot++)
@@ -549,9 +545,7 @@ internal static class DeclarationMatcher
                     continue;
                 }
 
-                var length = postings.TryGetValue(tokens[tokenIndex], out var indexes)
-                    ? indexes.Length
-                    : 0;
+                var length = postings.GetPostingCount(tokens[tokenIndex]);
                 if (length < bestLength)
                 {
                     bestLength = length;
