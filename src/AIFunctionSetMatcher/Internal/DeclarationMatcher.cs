@@ -72,25 +72,27 @@ internal static class DeclarationMatcher
                 continue;
             }
 
+            if (TryMatchUniqueCandidates(
+                left.Profiles,
+                leftIndexes,
+                right.Profiles,
+                rightIndexes,
+                options,
+                matchedLeft))
+            {
+                continue;
+            }
+
             using var workspace = new MatchWorkspace(
                 leftIndexes.Count,
                 rightIndexes.Count);
-            var hasUniqueCandidates = BuildScoreMatrix(
+            BuildScoreMatrix(
                 left.Profiles,
                 leftIndexes,
                 right.Profiles,
                 rightIndexes,
                 options,
                 workspace);
-            if (hasUniqueCandidates &&
-                TryApplyUniqueCandidates(
-                    leftIndexes,
-                    rightIndexes.Count,
-                    workspace,
-                    matchedLeft))
-            {
-                continue;
-            }
 
             MaximumWeightAssignment.Find(
                 leftIndexes.Count,
@@ -100,6 +102,84 @@ internal static class DeclarationMatcher
                 leftIndexes,
                 matchedLeft);
         }
+    }
+
+    /// <summary>
+    /// 在不分配分数矩阵的情况下查找一一对应的唯一候选。
+    /// </summary>
+    /// <param name="leftProfiles">左侧全部匹配档案。</param>
+    /// <param name="leftIndexes">当前分组的左侧下标。</param>
+    /// <param name="rightProfiles">右侧全部匹配档案。</param>
+    /// <param name="rightIndexes">当前分组的右侧下标。</param>
+    /// <param name="options">匹配选项。</param>
+    /// <param name="matchedLeft">接收左侧匹配下标的栈上标记。</param>
+    /// <returns>所有候选均唯一且一一对应时返回 <see langword="true"/>。</returns>
+    private static bool TryMatchUniqueCandidates(
+        IReadOnlyList<DeclarationMatchProfile> leftProfiles,
+        IReadOnlyList<int> leftIndexes,
+        IReadOnlyList<DeclarationMatchProfile> rightProfiles,
+        IReadOnlyList<int> rightIndexes,
+        AIFunctionMatchOptions options,
+        Span<bool> matchedLeft)
+    {
+        using var summary = new CandidateSummaryWorkspace(
+            leftIndexes.Count,
+            rightIndexes.Count);
+
+        for (var localLeft = 0; localLeft < leftIndexes.Count; localLeft++)
+        {
+            var left = leftProfiles[leftIndexes[localLeft]];
+            var candidateCount = 0;
+            var candidateRight = -1;
+            for (var localRight = 0; localRight < rightIndexes.Count; localRight++)
+            {
+                var right = rightProfiles[rightIndexes[localRight]];
+                if (!TryComputeScore(left, right, options, out var score) ||
+                    score < options.MinimumMatchScore)
+                {
+                    continue;
+                }
+
+                candidateCount++;
+                candidateRight = candidateCount == 1 ? localRight : -1;
+                if (candidateCount > 1)
+                {
+                    return false;
+                }
+            }
+
+            summary.CandidateCounts[localLeft] = candidateCount;
+            summary.UniqueCandidateByLeft[localLeft] = candidateRight;
+        }
+
+        for (var right = 0; right < rightIndexes.Count; right++)
+        {
+            summary.RightUniqueCounts[right] = 0;
+        }
+
+        for (var localLeft = 0; localLeft < leftIndexes.Count; localLeft++)
+        {
+            if (summary.CandidateCounts[localLeft] != 1)
+            {
+                continue;
+            }
+
+            var localRight = summary.UniqueCandidateByLeft[localLeft];
+            if (++summary.RightUniqueCounts[localRight] > 1)
+            {
+                return false;
+            }
+        }
+
+        for (var localLeft = 0; localLeft < leftIndexes.Count; localLeft++)
+        {
+            if (summary.CandidateCounts[localLeft] == 1)
+            {
+                matchedLeft[leftIndexes[localLeft]] = true;
+            }
+        }
+
+        return true;
     }
 
     /// <summary>
@@ -113,6 +193,12 @@ internal static class DeclarationMatcher
         DeclarationMatchIndex right,
         int maximumSchemaBytes)
     {
+        if (left.MaximumSchemaByteCount <= maximumSchemaBytes &&
+            right.MaximumSchemaByteCount <= maximumSchemaBytes)
+        {
+            return;
+        }
+
         foreach (var profile in left.Profiles)
         {
             if (profile.SchemaByteCount > maximumSchemaBytes)
@@ -141,8 +227,7 @@ internal static class DeclarationMatcher
     /// <param name="rightIndexes">当前分组的右侧下标。</param>
     /// <param name="options">匹配选项。</param>
     /// <param name="workspace">当前分组的池化工作数组。</param>
-    /// <returns>每个左侧最多只有一个合格候选时返回 <see langword="true"/>。</returns>
-    private static bool BuildScoreMatrix(
+    private static void BuildScoreMatrix(
         IReadOnlyList<DeclarationMatchProfile> leftProfiles,
         IReadOnlyList<int> leftIndexes,
         IReadOnlyList<DeclarationMatchProfile> rightProfiles,
@@ -151,36 +236,27 @@ internal static class DeclarationMatcher
         MatchWorkspace workspace)
     {
         var columnCount = rightIndexes.Count;
-        var hasUniqueCandidates = true;
         for (var localLeft = 0; localLeft < leftIndexes.Count; localLeft++)
         {
             var left = leftProfiles[leftIndexes[localLeft]];
             var bestScore = -1.0;
             var secondScore = -1.0;
-            var candidateCount = 0;
-            var candidateRight = -1;
             var rowOffset = localLeft * columnCount;
 
             for (var localRight = 0; localRight < columnCount; localRight++)
             {
                 var right = rightProfiles[rightIndexes[localRight]];
                 var scoreIndex = rowOffset + localRight;
-                if (!IsDescriptionCompatible(
+                if (!TryComputeScore(
                     left,
                     right,
                     options,
-                    out var descriptionScore))
+                    out var score))
                 {
                     workspace.Scores[scoreIndex] = -1;
                     continue;
                 }
 
-                var nameScore = TextSimilarity.ComputeNameSimilarity(
-                    left.NameTokens,
-                    right.NameTokens);
-                var score = left.HasDescription
-                    ? (0.75 * nameScore) + (0.25 * descriptionScore)
-                    : nameScore;
                 workspace.Scores[scoreIndex] = score;
 
                 if (score < options.MinimumMatchScore)
@@ -188,8 +264,6 @@ internal static class DeclarationMatcher
                     continue;
                 }
 
-                candidateCount++;
-                candidateRight = candidateCount == 1 ? localRight : -1;
                 if (score > bestScore)
                 {
                     secondScore = bestScore;
@@ -213,61 +287,40 @@ internal static class DeclarationMatcher
                     }
                 }
 
-                candidateCount = 0;
-                candidateRight = -1;
             }
-
-            workspace.CandidateCounts[localLeft] = candidateCount;
-            workspace.UniqueCandidateByLeft[localLeft] = candidateRight;
-            hasUniqueCandidates &= candidateCount <= 1;
         }
-
-        return hasUniqueCandidates;
     }
 
     /// <summary>
-    /// 在候选和右侧使用均唯一时直接应用匹配。
+    /// 计算两个预计算档案的最终匹配分数。
     /// </summary>
-    /// <param name="leftIndexes">当前分组的左侧下标。</param>
-    /// <param name="rightCount">当前分组的右侧数量。</param>
-    /// <param name="workspace">当前分组的池化工作数组。</param>
-    /// <param name="matchedLeft">接收左侧匹配下标的栈上标记。</param>
-    /// <returns>成功应用唯一候选匹配时返回 <see langword="true"/>。</returns>
-    private static bool TryApplyUniqueCandidates(
-        IReadOnlyList<int> leftIndexes,
-        int rightCount,
-        MatchWorkspace workspace,
-        Span<bool> matchedLeft)
+    /// <param name="expected">权威匹配档案。</param>
+    /// <param name="actual">客户端匹配档案。</param>
+    /// <param name="options">匹配选项。</param>
+    /// <param name="score">接收综合匹配分数。</param>
+    /// <returns>描述门禁允许比较时返回 <see langword="true"/>。</returns>
+    private static bool TryComputeScore(
+        DeclarationMatchProfile expected,
+        DeclarationMatchProfile actual,
+        AIFunctionMatchOptions options,
+        out double score)
     {
-        for (var right = 0; right < rightCount; right++)
+        if (!IsDescriptionCompatible(
+            expected,
+            actual,
+            options,
+            out var descriptionScore))
         {
-            workspace.RightUniqueCounts[right] = 0;
+            score = 0;
+            return false;
         }
 
-        for (var localLeft = 0; localLeft < leftIndexes.Count; localLeft++)
-        {
-            if (workspace.CandidateCounts[localLeft] != 1)
-            {
-                continue;
-            }
-
-            var localRight = workspace.UniqueCandidateByLeft[localLeft];
-            if (localRight < 0 ||
-                localRight >= rightCount ||
-                ++workspace.RightUniqueCounts[localRight] > 1)
-            {
-                return false;
-            }
-        }
-
-        for (var localLeft = 0; localLeft < leftIndexes.Count; localLeft++)
-        {
-            if (workspace.CandidateCounts[localLeft] == 1)
-            {
-                matchedLeft[leftIndexes[localLeft]] = true;
-            }
-        }
-
+        var nameScore = TextSimilarity.ComputeNameSimilarity(
+            expected.NameTokens,
+            actual.NameTokens);
+        score = expected.HasDescription
+            ? (0.75 * nameScore) + (0.25 * descriptionScore)
+            : nameScore;
         return true;
     }
 

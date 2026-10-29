@@ -21,9 +21,6 @@ internal sealed class MatchWorkspace : IDisposable
         scoreCount = rowCount * columnCount;
         matrixSize = Math.Max(rowCount, columnCount);
         Scores = ArrayPool<double>.Shared.Rent(scoreCount);
-        CandidateCounts = ArrayPool<int>.Shared.Rent(rowCount);
-        UniqueCandidateByLeft = ArrayPool<int>.Shared.Rent(rowCount);
-        RightUniqueCounts = ArrayPool<int>.Shared.Rent(columnCount);
         RowPotential = ArrayPool<double>.Shared.Rent(matrixSize + 1);
         ColumnPotential = ArrayPool<double>.Shared.Rent(matrixSize + 1);
         MatchedRow = ArrayPool<int>.Shared.Rent(matrixSize + 1);
@@ -36,21 +33,6 @@ internal sealed class MatchWorkspace : IDisposable
     /// 获取按行优先存储的分组候选分数矩阵。
     /// </summary>
     public double[] Scores { get; }
-
-    /// <summary>
-    /// 获取每个左侧声明的合格候选数量。
-    /// </summary>
-    public int[] CandidateCounts { get; }
-
-    /// <summary>
-    /// 获取每个合格候选数量为一的左侧声明对应的右侧下标。
-    /// </summary>
-    public int[] UniqueCandidateByLeft { get; }
-
-    /// <summary>
-    /// 获取每个右侧声明被唯一候选左侧引用的次数。
-    /// </summary>
-    public int[] RightUniqueCounts { get; }
 
     /// <summary>
     /// 获取 Hungarian 算法的行势能数组。
@@ -104,9 +86,6 @@ internal sealed class MatchWorkspace : IDisposable
 
         disposed = true;
         ArrayPool<double>.Shared.Return(Scores);
-        ArrayPool<int>.Shared.Return(CandidateCounts);
-        ArrayPool<int>.Shared.Return(UniqueCandidateByLeft);
-        ArrayPool<int>.Shared.Return(RightUniqueCounts);
         ArrayPool<double>.Shared.Return(RowPotential);
         ArrayPool<double>.Shared.Return(ColumnPotential);
         ArrayPool<int>.Shared.Return(MatchedRow);

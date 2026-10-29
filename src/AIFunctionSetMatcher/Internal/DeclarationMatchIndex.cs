@@ -9,10 +9,12 @@ internal sealed class DeclarationMatchIndex
 {
     private DeclarationMatchIndex(
         IReadOnlyList<DeclarationMatchProfile> profiles,
-        IReadOnlyDictionary<SchemaFingerprint, List<int>> groupsByFingerprint)
+        IReadOnlyDictionary<SchemaFingerprint, List<int>> groupsByFingerprint,
+        int maximumSchemaByteCount)
     {
         Profiles = profiles;
         GroupsByFingerprint = groupsByFingerprint;
+        MaximumSchemaByteCount = maximumSchemaByteCount;
     }
 
     /// <summary>
@@ -26,6 +28,11 @@ internal sealed class DeclarationMatchIndex
     public IReadOnlyDictionary<SchemaFingerprint, List<int>> GroupsByFingerprint { get; }
 
     /// <summary>
+    /// 获取当前索引中单个 Schema 的最大 UTF-8 字节数。
+    /// </summary>
+    public int MaximumSchemaByteCount { get; }
+
+    /// <summary>
     /// 为声明集合构建匹配索引。
     /// </summary>
     /// <param name="declarations">要建立索引的函数声明。</param>
@@ -35,10 +42,14 @@ internal sealed class DeclarationMatchIndex
     {
         var profiles = new DeclarationMatchProfile[declarations.Count];
         var groups = new Dictionary<SchemaFingerprint, List<int>>();
+        var maximumSchemaByteCount = 0;
         for (var index = 0; index < declarations.Count; index++)
         {
             var profile = DeclarationMatchProfile.Create(declarations[index]);
             profiles[index] = profile;
+            maximumSchemaByteCount = Math.Max(
+                maximumSchemaByteCount,
+                profile.SchemaByteCount);
             if (!groups.TryGetValue(profile.SchemaFingerprint, out var indexes))
             {
                 indexes = [];
@@ -48,6 +59,9 @@ internal sealed class DeclarationMatchIndex
             indexes.Add(index);
         }
 
-        return new DeclarationMatchIndex(profiles, groups);
+        return new DeclarationMatchIndex(
+            profiles,
+            groups,
+            maximumSchemaByteCount);
     }
 }
