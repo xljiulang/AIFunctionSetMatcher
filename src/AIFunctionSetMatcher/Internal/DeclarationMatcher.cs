@@ -526,7 +526,7 @@ internal static class DeclarationMatcher
         ReadOnlySpan<string> tokens,
         int pivotCount,
         IReadOnlyDictionary<string, int[]> postings,
-        int[] pivotIndexes)
+        Span<int> pivotIndexes)
     {
         for (var pivot = 0; pivot < pivotCount; pivot++)
         {

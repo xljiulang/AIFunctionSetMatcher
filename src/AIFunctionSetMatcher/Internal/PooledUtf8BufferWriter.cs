@@ -66,6 +66,15 @@ internal sealed class PooledUtf8BufferWriter : IBufferWriter<byte>, IDisposable
     }
 
     /// <summary>
+    /// 保留已租用容量并将写入位置重置到起始位置。
+    /// </summary>
+    public void Reset()
+    {
+        ObjectDisposedException.ThrowIf(disposed, this);
+        writtenCount = 0;
+    }
+
+    /// <summary>
     /// 将缓冲区归还共享数组池。
     /// </summary>
     public void Dispose()

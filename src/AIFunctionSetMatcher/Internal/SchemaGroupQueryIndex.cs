@@ -45,10 +45,10 @@ internal sealed class SchemaGroupQueryIndex
     public static SchemaGroupQueryIndex Create(
         IReadOnlyList<DeclarationMatchProfile> profiles)
     {
-        var descriptionPostings = new Dictionary<string, List<int>>(StringComparer.Ordinal);
-        var descriptionsByTokenCount = new Dictionary<int, List<int>>();
-        var namePostings = new Dictionary<string, List<int>>(StringComparer.Ordinal);
-        var namesByTokenCount = new Dictionary<int, List<int>>();
+        var descriptionCounts = new Dictionary<string, int>(StringComparer.Ordinal);
+        var descriptionTokenCounts = new Dictionary<int, int>();
+        var nameCounts = new Dictionary<string, int>(StringComparer.Ordinal);
+        var nameTokenCounts = new Dictionary<int, int>();
 
         for (var index = 0; index < profiles.Count; index++)
         {
@@ -56,92 +56,139 @@ internal sealed class SchemaGroupQueryIndex
             if (profile.HasDescription)
             {
                 AddProfile(
-                    index,
                     profile.DescriptionTokens,
-                    descriptionPostings,
-                    descriptionsByTokenCount);
+                    descriptionCounts,
+                    descriptionTokenCounts);
             }
             else
             {
                 AddProfile(
-                    index,
+                    profile.NameTokens,
+                    nameCounts,
+                    nameTokenCounts);
+            }
+        }
+
+        var descriptionPostings = CreatePostingArrays(descriptionCounts);
+        var descriptionsByTokenCount = CreateTokenCountArrays(descriptionTokenCounts);
+        var namePostings = CreatePostingArrays(nameCounts);
+        var namesByTokenCount = CreateTokenCountArrays(nameTokenCounts);
+        var descriptionOffsets = new Dictionary<string, int>(StringComparer.Ordinal);
+        var descriptionCountOffsets = new Dictionary<int, int>();
+        var nameOffsets = new Dictionary<string, int>(StringComparer.Ordinal);
+        var nameCountOffsets = new Dictionary<int, int>();
+
+        for (var profileIndex = 0; profileIndex < profiles.Count; profileIndex++)
+        {
+            var profile = profiles[profileIndex];
+            if (profile.HasDescription)
+            {
+                AddProfileIndex(
+                    profileIndex,
+                    profile.DescriptionTokens,
+                    descriptionPostings,
+                    descriptionOffsets,
+                    descriptionsByTokenCount,
+                    descriptionCountOffsets);
+            }
+            else
+            {
+                AddProfileIndex(
+                    profileIndex,
                     profile.NameTokens,
                     namePostings,
-                    namesByTokenCount);
+                    nameOffsets,
+                    namesByTokenCount,
+                    nameCountOffsets);
             }
         }
 
         return new SchemaGroupQueryIndex(
-            FreezePostings(descriptionPostings),
-            FreezeTokenCounts(descriptionsByTokenCount),
-            FreezePostings(namePostings),
-            FreezeTokenCounts(namesByTokenCount));
+            descriptionPostings,
+            descriptionsByTokenCount,
+            namePostings,
+            namesByTokenCount);
     }
 
     /// <summary>
-    /// 将单个档案的 token 添加到倒排表和 token 数量索引。
+    /// 统计单个档案的 token posting 数量和 token 数量桶。
     /// </summary>
-    /// <param name="profileIndex">分组内档案下标。</param>
     /// <param name="tokens">要索引的 token 集合。</param>
-    /// <param name="postings">token 倒排表。</param>
-    /// <param name="indexesByTokenCount">token 数量索引。</param>
+    /// <param name="postingCounts">token posting 数量。</param>
+    /// <param name="tokenCounts">token 数量桶计数。</param>
     private static void AddProfile(
-        int profileIndex,
         TokenSet tokens,
-        Dictionary<string, List<int>> postings,
-        Dictionary<int, List<int>> indexesByTokenCount)
+        Dictionary<string, int> postingCounts,
+        Dictionary<int, int> tokenCounts)
     {
         foreach (var token in tokens.Tokens)
         {
-            if (!postings.TryGetValue(token, out var indexes))
-            {
-                indexes = [];
-                postings.Add(token, indexes);
-            }
-
-            indexes.Add(profileIndex);
+            postingCounts[token] = postingCounts.GetValueOrDefault(token) + 1;
         }
 
-        if (!indexesByTokenCount.TryGetValue(tokens.Count, out var countIndexes))
-        {
-            countIndexes = [];
-            indexesByTokenCount.Add(tokens.Count, countIndexes);
-        }
-
-        countIndexes.Add(profileIndex);
+        tokenCounts[tokens.Count] = tokenCounts.GetValueOrDefault(tokens.Count) + 1;
     }
 
     /// <summary>
-    /// 将字符串倒排表冻结为数组。
+    /// 将单个档案下标写入最终 posting 和 token 数量数组。
     /// </summary>
-    /// <param name="postings">待冻结倒排表。</param>
-    /// <returns>值为数组的只读倒排字典。</returns>
-    private static IReadOnlyDictionary<string, int[]> FreezePostings(
-        Dictionary<string, List<int>> postings)
+    /// <param name="profileIndex">分组内档案下标。</param>
+    /// <param name="tokens">要索引的 token 集合。</param>
+    /// <param name="postings">最终 token posting 数组。</param>
+    /// <param name="postingOffsets">token posting 当前写入位置。</param>
+    /// <param name="indexesByTokenCount">最终 token 数量数组。</param>
+    /// <param name="tokenCountOffsets">token 数量数组当前写入位置。</param>
+    private static void AddProfileIndex(
+        int profileIndex,
+        TokenSet tokens,
+        Dictionary<string, int[]> postings,
+        Dictionary<string, int> postingOffsets,
+        Dictionary<int, int[]> indexesByTokenCount,
+        Dictionary<int, int> tokenCountOffsets)
+    {
+        foreach (var token in tokens.Tokens)
+        {
+            var offset = postingOffsets.GetValueOrDefault(token);
+            postings[token][offset] = profileIndex;
+            postingOffsets[token] = offset + 1;
+        }
+
+        var countOffset = tokenCountOffsets.GetValueOrDefault(tokens.Count);
+        indexesByTokenCount[tokens.Count][countOffset] = profileIndex;
+        tokenCountOffsets[tokens.Count] = countOffset + 1;
+    }
+
+    /// <summary>
+    /// 根据 posting 数量创建最终字符串倒排数组。
+    /// </summary>
+    /// <param name="postingCounts">token posting 数量。</param>
+    /// <returns>已分配未填充的 posting 数组字典。</returns>
+    private static Dictionary<string, int[]> CreatePostingArrays(
+        Dictionary<string, int> postingCounts)
     {
         var result = new Dictionary<string, int[]>(
-            postings.Count,
+            postingCounts.Count,
             StringComparer.Ordinal);
-        foreach (var (token, indexes) in postings)
+        foreach (var (token, count) in postingCounts)
         {
-            result.Add(token, indexes.ToArray());
+            result.Add(token, new int[count]);
         }
 
         return result;
     }
 
     /// <summary>
-    /// 将 token 数量索引冻结为数组。
+    /// 根据数量桶计数创建最终 token 数量数组。
     /// </summary>
-    /// <param name="indexesByTokenCount">待冻结 token 数量索引。</param>
-    /// <returns>值为数组的只读数量索引。</returns>
-    private static IReadOnlyDictionary<int, int[]> FreezeTokenCounts(
-        Dictionary<int, List<int>> indexesByTokenCount)
+    /// <param name="tokenCounts">token 数量桶计数。</param>
+    /// <returns>已分配未填充的数量索引字典。</returns>
+    private static Dictionary<int, int[]> CreateTokenCountArrays(
+        Dictionary<int, int> tokenCounts)
     {
-        var result = new Dictionary<int, int[]>(indexesByTokenCount.Count);
-        foreach (var (tokenCount, indexes) in indexesByTokenCount)
+        var result = new Dictionary<int, int[]>(tokenCounts.Count);
+        foreach (var (tokenCount, count) in tokenCounts)
         {
-            result.Add(tokenCount, indexes.ToArray());
+            result.Add(tokenCount, new int[count]);
         }
 
         return result;

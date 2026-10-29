@@ -7,7 +7,13 @@ namespace AIFunctionSetMatcher.Internal;
 /// </summary>
 internal sealed class SparseCandidateWorkspace : IDisposable
 {
-    private readonly int[] candidateMarks;
+    private readonly int[] storage;
+    private readonly int candidateIndexesOffset;
+    private readonly int candidateMarksOffset;
+    private readonly int pivotIndexesOffset;
+    private readonly int candidateCountsOffset;
+    private readonly int uniqueCandidateByLeftOffset;
+    private readonly int rightUniqueCountsOffset;
     private int rowStamp;
     private bool disposed;
 
@@ -22,23 +28,28 @@ internal sealed class SparseCandidateWorkspace : IDisposable
         int columnCount,
         int pivotCapacity)
     {
-        CandidateIndexes = ArrayPool<int>.Shared.Rent(columnCount);
-        candidateMarks = ArrayPool<int>.Shared.Rent(columnCount);
-        PivotIndexes = ArrayPool<int>.Shared.Rent(Math.Max(pivotCapacity, 1));
-        CandidateCounts = ArrayPool<int>.Shared.Rent(rowCount);
-        UniqueCandidateByLeft = ArrayPool<int>.Shared.Rent(rowCount);
-        RightUniqueCounts = ArrayPool<int>.Shared.Rent(columnCount);
+        candidateIndexesOffset = 0;
+        candidateMarksOffset = candidateIndexesOffset + columnCount;
+        pivotIndexesOffset = candidateMarksOffset + columnCount;
+        candidateCountsOffset = pivotIndexesOffset + Math.Max(pivotCapacity, 1);
+        uniqueCandidateByLeftOffset = candidateCountsOffset + rowCount;
+        rightUniqueCountsOffset = uniqueCandidateByLeftOffset + rowCount;
+        storage = ArrayPool<int>.Shared.Rent(
+            rightUniqueCountsOffset + columnCount);
+        storage.AsSpan(candidateMarksOffset, columnCount).Clear();
     }
 
     /// <summary>
     /// 获取当前左侧声明的候选右侧下标数组。
     /// </summary>
-    public int[] CandidateIndexes { get; }
+    public Span<int> CandidateIndexes =>
+        storage.AsSpan(candidateIndexesOffset, candidateMarksOffset - candidateIndexesOffset);
 
     /// <summary>
     /// 获取当前左侧声明选中的 token 锚点下标数组。
     /// </summary>
-    public int[] PivotIndexes { get; }
+    public Span<int> PivotIndexes =>
+        storage.AsSpan(pivotIndexesOffset, candidateCountsOffset - pivotIndexesOffset);
 
     /// <summary>
     /// 获取当前左侧声明的候选数量。
@@ -48,17 +59,20 @@ internal sealed class SparseCandidateWorkspace : IDisposable
     /// <summary>
     /// 获取每个左侧声明的真实合格候选数量。
     /// </summary>
-    public int[] CandidateCounts { get; }
+    public Span<int> CandidateCounts =>
+        storage.AsSpan(candidateCountsOffset, uniqueCandidateByLeftOffset - candidateCountsOffset);
 
     /// <summary>
     /// 获取唯一真实候选左侧声明对应的右侧下标。
     /// </summary>
-    public int[] UniqueCandidateByLeft { get; }
+    public Span<int> UniqueCandidateByLeft =>
+        storage.AsSpan(uniqueCandidateByLeftOffset, rightUniqueCountsOffset - uniqueCandidateByLeftOffset);
 
     /// <summary>
     /// 获取每个右侧声明被唯一候选左侧引用的次数。
     /// </summary>
-    public int[] RightUniqueCounts { get; }
+    public Span<int> RightUniqueCounts =>
+        storage.AsSpan(rightUniqueCountsOffset, storage.Length - rightUniqueCountsOffset);
 
     /// <summary>
     /// 为新的左侧声明开始一轮候选收集。
@@ -67,7 +81,9 @@ internal sealed class SparseCandidateWorkspace : IDisposable
     {
         if (rowStamp == int.MaxValue)
         {
-            Array.Clear(candidateMarks);
+            storage.AsSpan(
+                candidateMarksOffset,
+                pivotIndexesOffset - candidateMarksOffset).Clear();
             rowStamp = 0;
         }
 
@@ -81,12 +97,15 @@ internal sealed class SparseCandidateWorkspace : IDisposable
     /// <param name="candidateIndex">候选右侧分组内下标。</param>
     public void AddCandidate(int candidateIndex)
     {
-        if (candidateMarks[candidateIndex] == rowStamp)
+        var marks = storage.AsSpan(
+            candidateMarksOffset,
+            pivotIndexesOffset - candidateMarksOffset);
+        if (marks[candidateIndex] == rowStamp)
         {
             return;
         }
 
-        candidateMarks[candidateIndex] = rowStamp;
+        marks[candidateIndex] = rowStamp;
         CandidateIndexes[CandidateCount++] = candidateIndex;
     }
 
@@ -101,11 +120,6 @@ internal sealed class SparseCandidateWorkspace : IDisposable
         }
 
         disposed = true;
-        ArrayPool<int>.Shared.Return(CandidateIndexes);
-        ArrayPool<int>.Shared.Return(candidateMarks);
-        ArrayPool<int>.Shared.Return(PivotIndexes);
-        ArrayPool<int>.Shared.Return(CandidateCounts);
-        ArrayPool<int>.Shared.Return(UniqueCandidateByLeft);
-        ArrayPool<int>.Shared.Return(RightUniqueCounts);
+        ArrayPool<int>.Shared.Return(storage);
     }
 }

@@ -12,20 +12,26 @@ internal static class TextSimilarity
     /// 将函数名称转换为 token 集合。
     /// </summary>
     /// <param name="value">函数名称。</param>
+    /// <param name="interner">可选的组内 token 驻留器。</param>
     /// <returns>名称 token 集合。</returns>
-    public static TokenSet TokenizeName(string value)
+    public static TokenSet TokenizeName(
+        string value,
+        TokenInterner? interner = null)
     {
-        return Tokenize(value, includeCjkBigrams: false);
+        return Tokenize(value, includeCjkBigrams: false, interner);
     }
 
     /// <summary>
     /// 将函数描述转换为 token 集合。
     /// </summary>
     /// <param name="value">函数描述。</param>
+    /// <param name="interner">可选的组内 token 驻留器。</param>
     /// <returns>描述 token 集合。</returns>
-    public static TokenSet TokenizeDescription(string value)
+    public static TokenSet TokenizeDescription(
+        string value,
+        TokenInterner? interner = null)
     {
-        return Tokenize(value, includeCjkBigrams: true);
+        return Tokenize(value, includeCjkBigrams: true, interner);
     }
 
     /// <summary>
@@ -95,49 +101,58 @@ internal static class TextSimilarity
     /// </summary>
     /// <param name="value">要分词的文本。</param>
     /// <param name="includeCjkBigrams">是否将中文连续文本切分为双字 token。</param>
+    /// <param name="interner">可选的组内 token 驻留器。</param>
     /// <returns>分词结果。</returns>
     private static TokenSet Tokenize(
         string value,
-        bool includeCjkBigrams)
+        bool includeCjkBigrams,
+        TokenInterner? interner)
     {
         var normalized = RequiresNormalization(value)
             ? value.Normalize(NormalizationForm.FormKC)
             : value;
-        var tokens = new TokenSetBuilder();
-        var text = normalized.AsSpan();
-        var wordStart = -1;
-        var position = 0;
-
-        foreach (var rune in normalized.EnumerateRunes())
+        var tokens = new TokenSetBuilder(interner);
+        try
         {
-            if (Rune.IsLetterOrDigit(rune))
+            var text = normalized.AsSpan();
+            var wordStart = -1;
+            var position = 0;
+
+            foreach (var rune in normalized.EnumerateRunes())
             {
-                if (wordStart < 0)
+                if (Rune.IsLetterOrDigit(rune))
                 {
-                    wordStart = position;
+                    if (wordStart < 0)
+                    {
+                        wordStart = position;
+                    }
                 }
+                else if (wordStart >= 0)
+                {
+                    FlushWord(
+                        text.Slice(wordStart, position - wordStart),
+                        includeCjkBigrams,
+                        ref tokens);
+                    wordStart = -1;
+                }
+
+                position += rune.Utf16SequenceLength;
             }
-            else if (wordStart >= 0)
+
+            if (wordStart >= 0)
             {
                 FlushWord(
                     text.Slice(wordStart, position - wordStart),
                     includeCjkBigrams,
-                    tokens);
-                wordStart = -1;
+                    ref tokens);
             }
 
-            position += rune.Utf16SequenceLength;
+            return tokens.Build();
         }
-
-        if (wordStart >= 0)
+        finally
         {
-            FlushWord(
-                text.Slice(wordStart, position - wordStart),
-                includeCjkBigrams,
-                tokens);
+            tokens.Dispose();
         }
-
-        return tokens.Build();
     }
 
     /// <summary>
@@ -167,7 +182,7 @@ internal static class TextSimilarity
     private static void FlushWord(
         ReadOnlySpan<char> word,
         bool includeCjkBigrams,
-        TokenSetBuilder tokens)
+        ref TokenSetBuilder tokens)
     {
         if (word.IsEmpty)
         {
@@ -176,11 +191,11 @@ internal static class TextSimilarity
 
         if (includeCjkBigrams && ContainsOnlyCjk(word))
         {
-            AddCjkBigrams(word, tokens);
+            AddCjkBigrams(word, ref tokens);
             return;
         }
 
-        AddIdentifierParts(word, tokens);
+        AddIdentifierParts(word, ref tokens);
     }
 
     /// <summary>
@@ -208,7 +223,7 @@ internal static class TextSimilarity
     /// <param name="tokens">接收 token 的集合构建器。</param>
     private static void AddCjkBigrams(
         ReadOnlySpan<char> word,
-        TokenSetBuilder tokens)
+        ref TokenSetBuilder tokens)
     {
         if (word.Length == 1)
         {
@@ -229,7 +244,7 @@ internal static class TextSimilarity
     /// <param name="tokens">接收拆分结果的集合构建器。</param>
     private static void AddIdentifierParts(
         ReadOnlySpan<char> word,
-        TokenSetBuilder tokens)
+        ref TokenSetBuilder tokens)
     {
         var start = 0;
         for (var index = 1; index < word.Length; index++)
@@ -248,11 +263,11 @@ internal static class TextSimilarity
                 continue;
             }
 
-            AddToken(word[start..index], tokens);
+            AddToken(word[start..index], ref tokens);
             start = index;
         }
 
-        AddToken(word[start..], tokens);
+        AddToken(word[start..], ref tokens);
     }
 
     /// <summary>
@@ -262,7 +277,7 @@ internal static class TextSimilarity
     /// <param name="tokens">接收 token 的集合构建器。</param>
     private static void AddToken(
         ReadOnlySpan<char> value,
-        TokenSetBuilder tokens)
+        ref TokenSetBuilder tokens)
     {
         if (!value.IsEmpty)
         {

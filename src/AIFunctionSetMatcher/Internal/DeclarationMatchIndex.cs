@@ -77,10 +77,13 @@ internal sealed class DeclarationMatchIndex
         var entries = new DeclarationSchemaEntry[declarationArray.Length];
         var groups = new Dictionary<SchemaFingerprint, List<int>>();
         var maximumSchemaByteCount = 0;
+        using var signatureWorkspace = new SchemaSignatureWorkspace();
         for (var index = 0; index < declarationArray.Length; index++)
         {
             var declaration = declarationArray[index];
-            var signature = SchemaSignature.Compute(declaration);
+            var signature = SchemaSignature.Compute(
+                declaration,
+                signatureWorkspace);
             entries[index] = new DeclarationSchemaEntry(
                 declaration,
                 signature.Fingerprint,

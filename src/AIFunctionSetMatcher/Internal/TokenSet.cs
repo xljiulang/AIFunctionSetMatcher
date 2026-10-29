@@ -3,14 +3,9 @@ namespace AIFunctionSetMatcher.Internal;
 /// <summary>
 /// 保存按序号排序的不可变文本 token 集合。
 /// </summary>
-internal sealed class TokenSet
+internal readonly struct TokenSet
 {
-    private readonly string[] tokens;
-
-    /// <summary>
-    /// 获取不包含任何 token 的共享空集合。
-    /// </summary>
-    public static TokenSet Empty { get; } = new([]);
+    private readonly string[]? tokens;
 
     /// <summary>
     /// 初始化排序后的文本 token 集合。
@@ -22,14 +17,19 @@ internal sealed class TokenSet
     }
 
     /// <summary>
+    /// 获取不包含任何 token 的空集合。
+    /// </summary>
+    public static TokenSet Empty => default;
+
+    /// <summary>
     /// 获取 token 数量。
     /// </summary>
-    public int Count => tokens.Length;
+    public int Count => tokens?.Length ?? 0;
 
     /// <summary>
     /// 获取按序号排序的 token 只读跨度。
     /// </summary>
-    public ReadOnlySpan<string> Tokens => tokens;
+    public ReadOnlySpan<string> Tokens => tokens ?? [];
 
     /// <summary>
     /// 使用双指针计算当前集合与另一个集合的交集数量。
@@ -38,14 +38,16 @@ internal sealed class TokenSet
     /// <returns>两个集合共有的 token 数量。</returns>
     public int CountIntersection(TokenSet other)
     {
+        var leftTokens = Tokens;
+        var rightTokens = other.Tokens;
         var leftIndex = 0;
         var rightIndex = 0;
         var intersection = 0;
-        while (leftIndex < tokens.Length && rightIndex < other.tokens.Length)
+        while (leftIndex < leftTokens.Length && rightIndex < rightTokens.Length)
         {
             var comparison = string.CompareOrdinal(
-                tokens[leftIndex],
-                other.tokens[rightIndex]);
+                leftTokens[leftIndex],
+                rightTokens[rightIndex]);
             if (comparison == 0)
             {
                 intersection++;

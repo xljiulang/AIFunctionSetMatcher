@@ -57,22 +57,45 @@ internal sealed class DeclarationMatchProfile
     /// 为函数声明创建预计算匹配档案。
     /// </summary>
     /// <param name="declaration">要建立档案的函数声明。</param>
+    /// <param name="schemaFingerprint">已计算的 Schema 语义指纹。</param>
+    /// <param name="schemaByteCount">已计算的 Schema UTF-8 字节数。</param>
+    /// <param name="interner">可选的组内 token 驻留器。</param>
     /// <returns>新的匹配档案。</returns>
-    public static DeclarationMatchProfile Create(AIFunctionDeclaration declaration)
+    public static DeclarationMatchProfile Create(
+        AIFunctionDeclaration declaration,
+        SchemaFingerprint schemaFingerprint,
+        int schemaByteCount,
+        TokenInterner? interner = null)
     {
         var name = declaration.Name;
         var description = declaration.Description;
         var hasDescription = !string.IsNullOrWhiteSpace(description);
-        var schemaSignature = global::AIFunctionSetMatcher.Internal.SchemaSignature.Compute(
-            declaration);
         return new DeclarationMatchProfile(
+            declaration,
+            schemaFingerprint,
+            schemaByteCount,
+            TextSimilarity.TokenizeName(name, interner),
+            hasDescription
+                ? TextSimilarity.TokenizeDescription(description, interner)
+                : TokenSet.Empty,
+            hasDescription);
+    }
+
+    /// <summary>
+    /// 计算 Schema 签名并为函数声明创建匹配档案。
+    /// </summary>
+    /// <param name="declaration">要建立档案的函数声明。</param>
+    /// <param name="interner">可选的组内 token 驻留器。</param>
+    /// <returns>新的匹配档案。</returns>
+    public static DeclarationMatchProfile Create(
+        AIFunctionDeclaration declaration,
+        TokenInterner? interner = null)
+    {
+        var schemaSignature = SchemaSignature.Compute(declaration);
+        return Create(
             declaration,
             schemaSignature.Fingerprint,
             schemaSignature.Utf8ByteCount,
-            TextSimilarity.TokenizeName(name),
-            hasDescription
-                ? TextSimilarity.TokenizeDescription(description)
-                : TokenSet.Empty,
-            hasDescription);
+            interner);
     }
 }

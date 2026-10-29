@@ -56,10 +56,17 @@ internal sealed class SchemaGroupIndex
     private DeclarationMatchProfile[] CreateProfiles()
     {
         var result = new DeclarationMatchProfile[globalIndexes.Length];
+        var interner = globalIndexes.Length >= 16
+            ? new TokenInterner()
+            : null;
         for (var index = 0; index < globalIndexes.Length; index++)
         {
+            var entry = entries[globalIndexes[index]];
             result[index] = DeclarationMatchProfile.Create(
-                entries[globalIndexes[index]].Declaration);
+                entry.Declaration,
+                entry.Fingerprint,
+                entry.SchemaByteCount,
+                interner);
         }
 
         return result;

@@ -68,6 +68,20 @@ internal static class SchemaSignature
     /// <returns>Schema 语义指纹和原始 UTF-8 字节数。</returns>
     public static SchemaSignatureResult Compute(AIFunctionDeclaration declaration)
     {
+        using var workspace = new SchemaSignatureWorkspace();
+        return Compute(declaration, workspace);
+    }
+
+    /// <summary>
+    /// 使用可复用工作区计算函数声明的 Schema 语义指纹。
+    /// </summary>
+    /// <param name="declaration">要计算指纹的函数声明。</param>
+    /// <param name="workspace">可复用的 Schema canonical UTF-8 工作区。</param>
+    /// <returns>Schema 语义指纹和原始 UTF-8 字节数。</returns>
+    public static SchemaSignatureResult Compute(
+        AIFunctionDeclaration declaration,
+        SchemaSignatureWorkspace workspace)
+    {
         var schema = declaration.JsonSchema;
         if (schema.ValueKind != JsonValueKind.Object)
         {
@@ -76,14 +90,12 @@ internal static class SchemaSignature
         }
 
         var schemaBytes = JsonMarshal.GetRawUtf8Value(schema).Length;
-        using var canonical = new PooledUtf8BufferWriter();
-        using (var writer = new Utf8JsonWriter(canonical, WriterOptions))
-        {
-            CanonicalizeSchema(writer, schema);
-        }
+        workspace.Reset();
+        CanonicalizeSchema(workspace.Writer, schema);
+        workspace.Writer.Flush();
 
         Span<byte> digest = stackalloc byte[32];
-        SHA256.HashData(canonical.WrittenSpan, digest);
+        SHA256.HashData(workspace.Buffer.WrittenSpan, digest);
         return new SchemaSignatureResult(
             SchemaFingerprint.FromDigest(digest),
             schemaBytes);

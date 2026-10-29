@@ -16,6 +16,8 @@
 
 匹配过程使用调用级池化工作数组；当每个左侧声明最多只有一个无歧义候选时，会跳过 Hungarian 全局分配。请求侧索引使用 canonical UTF-8 Schema 指纹和紧凑 token 集合，避免保留十六进制签名字符串与每个文本的 `HashSet` 桶结构。
 
+达到 16 项的 Schema 分组会建立描述或名称 token postings。匹配器先使用稀有 token 生成安全候选超集，再执行精确分数、描述门禁和歧义检查；出现多个真实候选时自动回退到完整 Hungarian 全局分配。Schema 指纹先建立轻量索引，名称和描述档案只在左右共同 Schema 分组首次使用时创建。
+
 ## 基本用法
 
 ```csharp
@@ -110,4 +112,4 @@ dotnet run --project benchmarks/AIFunctionSetMatcher.Benchmarks/AIFunctionSetMat
 dotnet run --project benchmarks/AIFunctionSetMatcher.Benchmarks/AIFunctionSetMatcher.Benchmarks.csproj --configuration Release --no-build -- --list flat
 ```
 
-本机原始基线见 [`docs/benchmarks/2026-10-29-ai-function-set-matcher.md`](docs/benchmarks/2026-10-29-ai-function-set-matcher.md)，匹配索引缓存优化结果见 [`docs/benchmarks/2026-10-30-ai-function-set-matcher-optimization.md`](docs/benchmarks/2026-10-30-ai-function-set-matcher-optimization.md)，全链路分配优化结果见 [`docs/benchmarks/2026-10-30-ai-function-set-matcher-allocation-optimization.md`](docs/benchmarks/2026-10-30-ai-function-set-matcher-allocation-optimization.md)。基准结果依赖 CPU、运行时和后台负载，不用于 CI 硬性性能断言。
+本机原始基线见 [`docs/benchmarks/2026-10-29-ai-function-set-matcher.md`](docs/benchmarks/2026-10-29-ai-function-set-matcher.md)，匹配索引缓存优化结果见 [`docs/benchmarks/2026-10-30-ai-function-set-matcher-optimization.md`](docs/benchmarks/2026-10-30-ai-function-set-matcher-optimization.md)，全链路分配优化结果见 [`docs/benchmarks/2026-10-30-ai-function-set-matcher-allocation-optimization.md`](docs/benchmarks/2026-10-30-ai-function-set-matcher-allocation-optimization.md)，稀疏候选优化结果见 [`docs/benchmarks/2026-10-30-ai-function-set-matcher-sparse-candidate-optimization.md`](docs/benchmarks/2026-10-30-ai-function-set-matcher-sparse-candidate-optimization.md)。基准结果依赖 CPU、运行时和后台负载，不用于 CI 硬性性能断言。
