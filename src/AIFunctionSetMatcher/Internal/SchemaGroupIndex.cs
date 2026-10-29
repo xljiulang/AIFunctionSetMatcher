@@ -7,8 +7,8 @@ internal sealed class SchemaGroupIndex
 {
     private readonly DeclarationSchemaEntry[] entries;
     private readonly int[] globalIndexes;
-    private readonly Lazy<DeclarationMatchProfile[]> profiles;
-    private readonly Lazy<SchemaGroupQueryIndex> queryIndex;
+    private DeclarationMatchProfile[]? profiles;
+    private SchemaGroupQueryIndex? queryIndex;
 
     /// <summary>
     /// 初始化 Schema 声明分组。
@@ -21,12 +21,6 @@ internal sealed class SchemaGroupIndex
     {
         this.entries = entries;
         this.globalIndexes = globalIndexes;
-        profiles = new Lazy<DeclarationMatchProfile[]>(
-            CreateProfiles,
-            LazyThreadSafetyMode.ExecutionAndPublication);
-        queryIndex = new Lazy<SchemaGroupQueryIndex>(
-            () => SchemaGroupQueryIndex.Create(Profiles),
-            LazyThreadSafetyMode.ExecutionAndPublication);
     }
 
     /// <summary>
@@ -42,12 +36,56 @@ internal sealed class SchemaGroupIndex
     /// <summary>
     /// 获取线程安全惰性构建的完整匹配档案。
     /// </summary>
-    public IReadOnlyList<DeclarationMatchProfile> Profiles => profiles.Value;
+    public IReadOnlyList<DeclarationMatchProfile> Profiles
+    {
+        get
+        {
+            var current = Volatile.Read(ref profiles);
+            if (current is not null)
+            {
+                return current;
+            }
+
+            lock (globalIndexes)
+            {
+                current = profiles;
+                if (current is null)
+                {
+                    current = CreateProfiles();
+                    Volatile.Write(ref profiles, current);
+                }
+
+                return current;
+            }
+        }
+    }
 
     /// <summary>
     /// 获取线程安全惰性构建的右侧查询索引。
     /// </summary>
-    public SchemaGroupQueryIndex QueryIndex => queryIndex.Value;
+    public SchemaGroupQueryIndex QueryIndex
+    {
+        get
+        {
+            var current = Volatile.Read(ref queryIndex);
+            if (current is not null)
+            {
+                return current;
+            }
+
+            lock (globalIndexes)
+            {
+                current = queryIndex;
+                if (current is null)
+                {
+                    current = SchemaGroupQueryIndex.Create(Profiles);
+                    Volatile.Write(ref queryIndex, current);
+                }
+
+                return current;
+            }
+        }
+    }
 
     /// <summary>
     /// 为分组内声明构建完整匹配档案。
