@@ -97,16 +97,27 @@ internal sealed class SchemaGroupIndex
         var interner = globalIndexes.Length >= 16
             ? new TokenInterner()
             : null;
-        for (var index = 0; index < globalIndexes.Length; index++)
+        var arena = new TokenArena();
+        try
         {
-            var entry = entries[globalIndexes[index]];
-            result[index] = DeclarationMatchProfile.Create(
-                entry.Declaration,
-                entry.Fingerprint,
-                entry.SchemaByteCount,
-                interner);
-        }
+            for (var index = 0; index < globalIndexes.Length; index++)
+            {
+                var entry = entries[globalIndexes[index]];
+                result[index] = DeclarationMatchProfile.Create(
+                    entry.Declaration,
+                    entry.Fingerprint,
+                    entry.SchemaByteCount,
+                    arena,
+                    interner);
+            }
 
-        return result;
+            arena.Seal();
+            return result;
+        }
+        catch
+        {
+            arena.Dispose();
+            throw;
+        }
     }
 }

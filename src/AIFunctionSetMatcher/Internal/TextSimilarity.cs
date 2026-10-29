@@ -14,12 +14,14 @@ internal static class TextSimilarity
     /// </summary>
     /// <param name="value">函数名称。</param>
     /// <param name="interner">可选的组内 token 驻留器。</param>
+    /// <param name="arena">接收有序 token 的 Schema 组 Arena。</param>
     /// <returns>名称 token 集合。</returns>
     public static TokenSet TokenizeName(
         string value,
-        TokenInterner? interner = null)
+        TokenInterner? interner,
+        TokenArena arena)
     {
-        return Tokenize(value, includeCjkBigrams: false, interner);
+        return Tokenize(value, includeCjkBigrams: false, interner, arena);
     }
 
     /// <summary>
@@ -27,12 +29,14 @@ internal static class TextSimilarity
     /// </summary>
     /// <param name="value">函数描述。</param>
     /// <param name="interner">可选的组内 token 驻留器。</param>
+    /// <param name="arena">接收有序 token 的 Schema 组 Arena。</param>
     /// <returns>描述 token 集合。</returns>
     public static TokenSet TokenizeDescription(
         string value,
-        TokenInterner? interner = null)
+        TokenInterner? interner,
+        TokenArena arena)
     {
-        return Tokenize(value, includeCjkBigrams: true, interner);
+        return Tokenize(value, includeCjkBigrams: true, interner, arena);
     }
 
     /// <summary>
@@ -103,11 +107,13 @@ internal static class TextSimilarity
     /// <param name="value">要分词的文本。</param>
     /// <param name="includeCjkBigrams">是否将中文连续文本切分为双字 token。</param>
     /// <param name="interner">可选的组内 token 驻留器。</param>
+    /// <param name="arena">接收有序 token 的 Schema 组 Arena。</param>
     /// <returns>分词结果。</returns>
     private static TokenSet Tokenize(
         string value,
         bool includeCjkBigrams,
-        TokenInterner? interner)
+        TokenInterner? interner,
+        TokenArena arena)
     {
         var normalized = RequiresNormalization(value)
             ? value.Normalize(NormalizationForm.FormKC)
@@ -148,7 +154,7 @@ internal static class TextSimilarity
                     ref tokens);
             }
 
-            return tokens.Build();
+            return tokens.Build(arena);
         }
         finally
         {

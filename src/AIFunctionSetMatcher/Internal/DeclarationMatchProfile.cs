@@ -60,11 +60,13 @@ internal sealed class DeclarationMatchProfile
     /// <param name="schemaFingerprint">已计算的 Schema 语义指纹。</param>
     /// <param name="schemaByteCount">已计算的 Schema UTF-8 字节数。</param>
     /// <param name="interner">可选的组内 token 驻留器。</param>
+    /// <param name="arena">接收名称和描述 token 的 Schema 组 Arena。</param>
     /// <returns>新的匹配档案。</returns>
     public static DeclarationMatchProfile Create(
         AIFunctionDeclaration declaration,
         SchemaFingerprint schemaFingerprint,
         int schemaByteCount,
+        TokenArena arena,
         TokenInterner? interner = null)
     {
         var name = declaration.Name;
@@ -74,9 +76,9 @@ internal sealed class DeclarationMatchProfile
             declaration,
             schemaFingerprint,
             schemaByteCount,
-            TextSimilarity.TokenizeName(name, interner),
+            TextSimilarity.TokenizeName(name, interner, arena),
             hasDescription
-                ? TextSimilarity.TokenizeDescription(description, interner)
+                ? TextSimilarity.TokenizeDescription(description, interner, arena)
                 : TokenSet.Empty,
             hasDescription);
     }
@@ -92,10 +94,22 @@ internal sealed class DeclarationMatchProfile
         TokenInterner? interner = null)
     {
         var schemaSignature = SchemaSignature.Compute(declaration);
-        return Create(
-            declaration,
-            schemaSignature.Fingerprint,
-            schemaSignature.Utf8ByteCount,
-            interner);
+        var arena = new TokenArena();
+        try
+        {
+            var profile = Create(
+                declaration,
+                schemaSignature.Fingerprint,
+                schemaSignature.Utf8ByteCount,
+                arena,
+                interner);
+            arena.Seal();
+            return profile;
+        }
+        catch
+        {
+            arena.Dispose();
+            throw;
+        }
     }
 }

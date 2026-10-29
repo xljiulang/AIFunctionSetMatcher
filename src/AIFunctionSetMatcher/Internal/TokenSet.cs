@@ -5,15 +5,21 @@ namespace AIFunctionSetMatcher.Internal;
 /// </summary>
 internal readonly struct TokenSet
 {
-    private readonly string[]? tokens;
+    private readonly TokenArena? arena;
+    private readonly int offset;
+    private readonly int count;
 
     /// <summary>
-    /// 初始化排序后的文本 token 集合。
+    /// 初始化 Arena 中的文本 token slice。
     /// </summary>
-    /// <param name="sortedTokens">已去重并按序号排序的 token 数组。</param>
-    internal TokenSet(string[] sortedTokens)
+    /// <param name="arena">保存 token 的冻结 Arena。</param>
+    /// <param name="offset">slice 起始偏移。</param>
+    /// <param name="count">slice token 数量。</param>
+    internal TokenSet(TokenArena arena, int offset, int count)
     {
-        tokens = sortedTokens;
+        this.arena = arena;
+        this.offset = offset;
+        this.count = count;
     }
 
     /// <summary>
@@ -24,12 +30,20 @@ internal readonly struct TokenSet
     /// <summary>
     /// 获取 token 数量。
     /// </summary>
-    public int Count => tokens?.Length ?? 0;
+    public int Count => count;
 
     /// <summary>
     /// 获取按序号排序的 token 只读跨度。
     /// </summary>
-    public ReadOnlySpan<string> Tokens => tokens ?? [];
+    public ReadOnlySpan<string> Tokens
+    {
+        get
+        {
+            return arena is null
+                ? []
+                : arena.GetSpan(offset, count);
+        }
+    }
 
     /// <summary>
     /// 使用双指针计算当前集合与另一个集合的交集数量。

@@ -80,17 +80,18 @@ internal ref struct TokenSetBuilder
     /// <summary>
     /// 构建按序号排序且已去重的不可变 token 集合。
     /// </summary>
+    /// <param name="arena">接收有序 token 的 Schema 组 Arena。</param>
     /// <returns>新的文本 token 集合。</returns>
-    public TokenSet Build()
+    public TokenSet Build(TokenArena arena)
     {
-        var sortedTokens = new string[count];
+        var sortedTokens = buffer.AsSpan(0, count);
         if (count > 0)
         {
-            buffer.AsSpan(0, count).CopyTo(sortedTokens);
-            Array.Sort(sortedTokens, StringComparer.Ordinal);
+            sortedTokens.Sort(StringComparer.Ordinal);
         }
 
-        return new TokenSet(sortedTokens);
+        var offset = arena.Append(sortedTokens);
+        return new TokenSet(arena, offset, count);
     }
 
     /// <summary>
