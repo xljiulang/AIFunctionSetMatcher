@@ -27,6 +27,11 @@ internal sealed class TokenSet
     public int Count => tokens.Length;
 
     /// <summary>
+    /// 获取按序号排序的 token 只读跨度。
+    /// </summary>
+    public ReadOnlySpan<string> Tokens => tokens;
+
+    /// <summary>
     /// 使用双指针计算当前集合与另一个集合的交集数量。
     /// </summary>
     /// <param name="other">另一个排序 token 集合。</param>
