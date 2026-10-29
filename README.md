@@ -108,4 +108,4 @@ dotnet run --project benchmarks/AIFunctionSetMatcher.Benchmarks/AIFunctionSetMat
 dotnet run --project benchmarks/AIFunctionSetMatcher.Benchmarks/AIFunctionSetMatcher.Benchmarks.csproj --configuration Release --no-build -- --list flat
 ```
 
-本机实测基线见 [`docs/benchmarks/2026-10-29-ai-function-set-matcher.md`](docs/benchmarks/2026-10-29-ai-function-set-matcher.md)。基准结果依赖 CPU、运行时和后台负载，不用于 CI 硬性性能断言。
+本机原始基线见 [`docs/benchmarks/2026-10-29-ai-function-set-matcher.md`](docs/benchmarks/2026-10-29-ai-function-set-matcher.md)，匹配索引缓存优化结果见 [`docs/benchmarks/2026-10-30-ai-function-set-matcher-optimization.md`](docs/benchmarks/2026-10-30-ai-function-set-matcher-optimization.md)。基准结果依赖 CPU、运行时和后台负载，不用于 CI 硬性性能断言。
