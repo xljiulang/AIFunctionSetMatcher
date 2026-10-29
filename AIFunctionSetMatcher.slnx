@@ -1,0 +1,5 @@
+<Solution>
+  <Project Path="src/AIFunctionSetMatcher/AIFunctionSetMatcher.csproj" />
+  <Project Path="tests/AIFunctionSetMatcher.Tests/AIFunctionSetMatcher.Tests.csproj" />
+  <Project Path="benchmarks/AIFunctionSetMatcher.Benchmarks/AIFunctionSetMatcher.Benchmarks.csproj" />
+</Solution>
