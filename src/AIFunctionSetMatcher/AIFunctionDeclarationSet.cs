@@ -1,5 +1,5 @@
 using Microsoft.Extensions.AI;
-using System.Text;
+using System.Runtime.InteropServices;
 using System.Text.Json;
 using AIFunctionSetMatcher.Internal;
 
@@ -224,7 +224,7 @@ public sealed class AIFunctionDeclarationSet
     /// <returns>解析后的函数声明和下一页游标。</returns>
     private static ParsedPage ParsePage(JsonElement json)
     {
-        if (Encoding.UTF8.GetByteCount(json.GetRawText()) > MaximumDocumentBytes)
+        if (JsonMarshal.GetRawUtf8Value(json).Length > MaximumDocumentBytes)
         {
             throw new AIFunctionDeclarationSetParseException(
                 "JSON 文档不能超过 4 MiB。");
