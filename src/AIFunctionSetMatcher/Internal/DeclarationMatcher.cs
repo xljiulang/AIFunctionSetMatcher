@@ -3,12 +3,11 @@ using Microsoft.Extensions.AI;
 namespace AIFunctionSetMatcher.Internal;
 
 /// <summary>
-/// 使用预计算匹配档案、语义签名和全局一对一分配匹配函数声明。
+/// 使用 Schema 和描述硬过滤、名称相似度和全局一对一分配匹配函数声明。
 /// </summary>
 internal static class DeclarationMatcher
 {
     private const double InvalidCost = 1_000;
-    private const int SparseMatchingMinimumCount = 16;
 
     /// <summary>
     /// 查找左侧集合中无法与右侧集合建立匹配的声明。
@@ -73,121 +72,89 @@ internal static class DeclarationMatcher
                 continue;
             }
 
-            if (leftGroup.Count >= SparseMatchingMinimumCount &&
-                rightGroup.Count >= SparseMatchingMinimumCount &&
-                TryMatchSparseCandidates(
+            MatchDescriptionBuckets(
                 leftGroup,
                 rightGroup,
-                options,
-                matchedLeft))
-            {
-                continue;
-            }
-
-            if (leftGroup.Count < SparseMatchingMinimumCount &&
-                TryMatchUniqueCandidates(
-                leftGroup.Profiles,
-                leftGroup.GlobalIndexes,
-                rightGroup.Profiles,
-                options,
-                matchedLeft))
-            {
-                continue;
-            }
-
-            using var workspace = new MatchWorkspace(
-                leftGroup.Count,
-                rightGroup.Count);
-            BuildScoreMatrix(
-                leftGroup.Profiles,
-                rightGroup.Profiles,
-                options,
-                workspace);
-
-            MaximumWeightAssignment.Find(
-                leftGroup.Count,
-                rightGroup.Count,
-                workspace,
-                options.MinimumMatchScore,
-                leftGroup.GlobalIndexes,
                 matchedLeft);
         }
     }
 
     /// <summary>
-    /// 在不分配分数矩阵的情况下查找一一对应的唯一候选。
+    /// 匹配同一 Schema 分组内具有相同描述指纹的声明。
     /// </summary>
-    /// <param name="leftProfiles">左侧全部匹配档案。</param>
-    /// <param name="globalLeftIndexes">当前分组的左侧全局下标。</param>
-    /// <param name="rightProfiles">右侧全部匹配档案。</param>
-    /// <param name="options">匹配选项。</param>
+    /// <param name="leftGroup">左侧 Schema 分组。</param>
+    /// <param name="rightGroup">右侧 Schema 分组。</param>
     /// <param name="matchedLeft">接收左侧匹配下标的栈上标记。</param>
-    /// <returns>所有候选均唯一且一一对应时返回 <see langword="true"/>。</returns>
-    private static bool TryMatchUniqueCandidates(
-        IReadOnlyList<DeclarationMatchProfile> leftProfiles,
-        IReadOnlyList<int> globalLeftIndexes,
-        IReadOnlyList<DeclarationMatchProfile> rightProfiles,
-        AIFunctionMatchOptions options,
+    private static void MatchDescriptionBuckets(
+        SchemaGroupIndex leftGroup,
+        SchemaGroupIndex rightGroup,
         Span<bool> matchedLeft)
     {
-        using var summary = new CandidateSummaryWorkspace(
-            leftProfiles.Count,
-            rightProfiles.Count);
-
-        for (var localLeft = 0; localLeft < leftProfiles.Count; localLeft++)
+        var leftBuckets = leftGroup.DescriptionBuckets;
+        var rightBuckets = rightGroup.DescriptionBuckets;
+        foreach (var (descriptionFingerprint, leftSlot) in
+                 leftBuckets.BucketSlots)
         {
-            var left = leftProfiles[localLeft];
-            var candidateCount = 0;
-            var candidateRight = -1;
-            for (var localRight = 0; localRight < rightProfiles.Count; localRight++)
-            {
-                var right = rightProfiles[localRight];
-                if (!TryComputeScore(left, right, options, out var score) ||
-                    score < options.MinimumMatchScore)
-                {
-                    continue;
-                }
-
-                candidateCount++;
-                candidateRight = candidateCount == 1 ? localRight : -1;
-                if (candidateCount > 1)
-                {
-                    return false;
-                }
-            }
-
-            summary.CandidateCounts[localLeft] = candidateCount;
-            summary.UniqueCandidateByLeft[localLeft] = candidateRight;
-        }
-
-        for (var right = 0; right < rightProfiles.Count; right++)
-        {
-            summary.RightUniqueCounts[right] = 0;
-        }
-
-        for (var localLeft = 0; localLeft < leftProfiles.Count; localLeft++)
-        {
-            if (summary.CandidateCounts[localLeft] != 1)
+            if (!rightBuckets.BucketSlots.TryGetValue(
+                descriptionFingerprint,
+                out var rightSlot))
             {
                 continue;
             }
 
-            var localRight = summary.UniqueCandidateByLeft[localLeft];
-            if (++summary.RightUniqueCounts[localRight] > 1)
+            var leftProfileIndexes =
+                leftBuckets.GetProfileIndexes(leftSlot);
+            var rightProfileIndexes =
+                rightBuckets.GetProfileIndexes(rightSlot);
+            if (leftProfileIndexes.Length == 1 &&
+                rightProfileIndexes.Length == 1)
             {
-                return false;
+                matchedLeft[
+                    leftGroup.GlobalIndexes[leftProfileIndexes[0]]] = true;
+                continue;
             }
-        }
 
-        for (var localLeft = 0; localLeft < leftProfiles.Count; localLeft++)
-        {
-            if (summary.CandidateCounts[localLeft] == 1)
-            {
-                matchedLeft[globalLeftIndexes[localLeft]] = true;
-            }
+            MatchDescriptionBucket(
+                leftGroup,
+                rightGroup,
+                leftProfileIndexes,
+                rightProfileIndexes,
+                matchedLeft);
         }
+    }
 
-        return true;
+    /// <summary>
+    /// 使用名称相似度为重复描述桶执行全局一对一分配。
+    /// </summary>
+    /// <param name="leftGroup">左侧 Schema 分组。</param>
+    /// <param name="rightGroup">右侧 Schema 分组。</param>
+    /// <param name="leftProfileIndexes">左侧描述桶中的组内 profile 下标。</param>
+    /// <param name="rightProfileIndexes">右侧描述桶中的组内 profile 下标。</param>
+    /// <param name="matchedLeft">接收左侧匹配下标的栈上标记。</param>
+    private static void MatchDescriptionBucket(
+        SchemaGroupIndex leftGroup,
+        SchemaGroupIndex rightGroup,
+        ReadOnlySpan<int> leftProfileIndexes,
+        ReadOnlySpan<int> rightProfileIndexes,
+        Span<bool> matchedLeft)
+    {
+        using var workspace = new MatchWorkspace(
+            leftProfileIndexes.Length,
+            rightProfileIndexes.Length);
+        BuildNameScoreMatrix(
+            leftGroup.Profiles,
+            leftProfileIndexes,
+            rightGroup.Profiles,
+            rightProfileIndexes,
+            workspace);
+
+        MaximumWeightAssignment.Find(
+            leftProfileIndexes.Length,
+            rightProfileIndexes.Length,
+            workspace,
+            leftGroup.GlobalIndexes,
+            leftProfileIndexes,
+            matchedLeft);
     }
 
     /// <summary>
@@ -229,466 +196,38 @@ internal static class DeclarationMatcher
     }
 
     /// <summary>
-    /// 使用右侧 token 倒排索引生成安全候选超集，并匹配一一对应的唯一候选。
+    /// 为描述桶内全部合法配对构建名称相似度矩阵。
     /// </summary>
-    /// <param name="leftGroup">左侧 Schema 分组。</param>
-    /// <param name="rightGroup">右侧 Schema 分组。</param>
-    /// <param name="options">匹配选项。</param>
-    /// <param name="matchedLeft">接收左侧匹配下标的栈上标记。</param>
-    /// <returns>所有候选均唯一且一一对应时返回 <see langword="true"/>。</returns>
-    private static bool TryMatchSparseCandidates(
-        SchemaGroupIndex leftGroup,
-        SchemaGroupIndex rightGroup,
-        AIFunctionMatchOptions options,
-        Span<bool> matchedLeft)
-    {
-        if (options.MinimumMatchScore <= 0 ||
-            options.MinimumDescriptionSimilarity <= 0)
-        {
-            return false;
-        }
-
-        var leftProfiles = leftGroup.Profiles;
-        var rightProfiles = rightGroup.Profiles;
-        var queryIndex = rightGroup.QueryIndex;
-        var pivotCapacity = 0;
-        foreach (var profile in leftProfiles)
-        {
-            pivotCapacity = Math.Max(
-                pivotCapacity,
-                profile.HasDescription
-                    ? profile.DescriptionTokens.Count
-                    : profile.NameTokens.Count);
-        }
-
-        using var workspace = new SparseCandidateWorkspace(
-            leftProfiles.Count,
-            rightProfiles.Count,
-            pivotCapacity);
-
-        for (var localLeft = 0; localLeft < leftProfiles.Count; localLeft++)
-        {
-            var left = leftProfiles[localLeft];
-            workspace.BeginRow();
-            var canPrune = left.HasDescription
-                ? AddDescriptionCandidates(
-                    left,
-                    rightProfiles,
-                    queryIndex,
-                    options,
-                    workspace)
-                : AddNameCandidates(
-                    left,
-                    rightProfiles,
-                    queryIndex,
-                    options,
-                    workspace);
-            if (!canPrune)
-            {
-                return false;
-            }
-
-            var candidateCount = 0;
-            var candidateRight = -1;
-            for (var candidate = 0; candidate < workspace.CandidateCount; candidate++)
-            {
-                var localRight = workspace.CandidateIndexes[candidate];
-                var right = rightProfiles[localRight];
-                if (!TryComputeScore(left, right, options, out var score) ||
-                    score < options.MinimumMatchScore)
-                {
-                    continue;
-                }
-
-                candidateCount++;
-                candidateRight = candidateCount == 1 ? localRight : -1;
-                if (candidateCount > 1)
-                {
-                    return false;
-                }
-            }
-
-            workspace.CandidateCounts[localLeft] = candidateCount;
-            workspace.UniqueCandidateByLeft[localLeft] = candidateRight;
-        }
-
-        for (var right = 0; right < rightProfiles.Count; right++)
-        {
-            workspace.RightUniqueCounts[right] = 0;
-        }
-
-        for (var localLeft = 0; localLeft < leftProfiles.Count; localLeft++)
-        {
-            if (workspace.CandidateCounts[localLeft] != 1)
-            {
-                continue;
-            }
-
-            var localRight = workspace.UniqueCandidateByLeft[localLeft];
-            if (++workspace.RightUniqueCounts[localRight] > 1)
-            {
-                return false;
-            }
-        }
-
-        for (var localLeft = 0; localLeft < leftProfiles.Count; localLeft++)
-        {
-            if (workspace.CandidateCounts[localLeft] == 1)
-            {
-                matchedLeft[leftGroup.GlobalIndexes[localLeft]] = true;
-            }
-        }
-
-        return true;
-    }
-
-    /// <summary>
-    /// 根据描述 Jaccard 上界添加稀有 token 候选。
-    /// </summary>
-    /// <param name="left">左侧匹配档案。</param>
-    /// <param name="rightProfiles">右侧分组匹配档案。</param>
-    /// <param name="queryIndex">右侧 token 查询索引。</param>
-    /// <param name="options">匹配选项。</param>
-    /// <param name="workspace">稀疏候选工作数组。</param>
-    /// <returns>可以安全使用候选剪枝时返回 <see langword="true"/>。</returns>
-    private static bool AddDescriptionCandidates(
-        DeclarationMatchProfile left,
-        IReadOnlyList<DeclarationMatchProfile> rightProfiles,
-        SchemaGroupQueryIndex queryIndex,
-        AIFunctionMatchOptions options,
-        SparseCandidateWorkspace workspace)
-    {
-        var leftCount = left.DescriptionTokens.Count;
-        if (leftCount == 0)
-        {
-            return true;
-        }
-
-        var threshold = options.MinimumDescriptionSimilarity;
-        foreach (var (rightCount, _) in queryIndex.DescriptionsByTokenCount.Buckets)
-        {
-            if (rightCount == 0)
-            {
-                continue;
-            }
-
-            var smallerCount = Math.Min(leftCount, rightCount);
-            var largerCount = Math.Max(leftCount, rightCount);
-            if ((double)smallerCount / largerCount < threshold)
-            {
-                continue;
-            }
-
-            var requiredIntersection = (int)Math.Ceiling(
-                threshold * (leftCount + rightCount) / (1 + threshold));
-            if (requiredIntersection <= 0 ||
-                requiredIntersection > leftCount)
-            {
-                continue;
-            }
-
-            var pivotCount = leftCount - requiredIntersection + 1;
-            if (pivotCount <= 0 || pivotCount > leftCount)
-            {
-                return false;
-            }
-
-            AddRareTokenCandidates(
-                left.DescriptionTokens,
-                pivotCount,
-                queryIndex.DescriptionPostings,
-                rightProfiles,
-                rightCount,
-                useDescriptionTokens: true,
-                workspace);
-        }
-
-        return true;
-    }
-
-    /// <summary>
-    /// 根据无描述名称相似度上界添加稀有 token 候选。
-    /// </summary>
-    /// <param name="left">左侧匹配档案。</param>
-    /// <param name="rightProfiles">右侧分组匹配档案。</param>
-    /// <param name="queryIndex">右侧 token 查询索引。</param>
-    /// <param name="options">匹配选项。</param>
-    /// <param name="workspace">稀疏候选工作数组。</param>
-    /// <returns>可以安全使用候选剪枝时返回 <see langword="true"/>。</returns>
-    private static bool AddNameCandidates(
-        DeclarationMatchProfile left,
-        IReadOnlyList<DeclarationMatchProfile> rightProfiles,
-        SchemaGroupQueryIndex queryIndex,
-        AIFunctionMatchOptions options,
-        SparseCandidateWorkspace workspace)
-    {
-        var leftCount = left.NameTokens.Count;
-        if (leftCount == 0)
-        {
-            return true;
-        }
-
-        var threshold = options.MinimumMatchScore;
-        foreach (var (rightCount, _) in queryIndex.NamesByTokenCount.Buckets)
-        {
-            if (rightCount == 0)
-            {
-                continue;
-            }
-
-            var smallerCount = Math.Min(leftCount, rightCount);
-            var requiredIntersection = (int)Math.Ceiling(
-                threshold * smallerCount);
-            if (requiredIntersection <= 0 ||
-                requiredIntersection > leftCount)
-            {
-                if (requiredIntersection <= 0)
-                {
-                    return false;
-                }
-
-                continue;
-            }
-
-            var pivotCount = leftCount - requiredIntersection + 1;
-            if (pivotCount <= 0 || pivotCount > leftCount)
-            {
-                return false;
-            }
-
-            AddRareTokenCandidates(
-                left.NameTokens,
-                pivotCount,
-                queryIndex.NamePostings,
-                rightProfiles,
-                rightCount,
-                useDescriptionTokens: false,
-                workspace);
-        }
-
-        return true;
-    }
-
-    /// <summary>
-    /// 将左侧最稀有的 token posting 成员加入候选集。
-    /// </summary>
-    /// <param name="sourceTokens">左侧 token 集合。</param>
-    /// <param name="pivotCount">需要选择的稀有 token 数量。</param>
-    /// <param name="postings">token 到右侧分组内下标的倒排表。</param>
-    /// <param name="rightProfiles">右侧分组匹配档案。</param>
-    /// <param name="rightTokenCount">当前右侧 token 数量桶。</param>
-    /// <param name="useDescriptionTokens">按描述 token 数量过滤时为 <see langword="true"/>。</param>
-    /// <param name="workspace">稀疏候选工作数组。</param>
-    private static void AddRareTokenCandidates(
-        TokenSet sourceTokens,
-        int pivotCount,
-        CompactPostingIndex postings,
-        IReadOnlyList<DeclarationMatchProfile> rightProfiles,
-        int rightTokenCount,
-        bool useDescriptionTokens,
-        SparseCandidateWorkspace workspace)
-    {
-        SelectRareTokens(
-            sourceTokens.Tokens,
-            pivotCount,
-            postings,
-            workspace.PivotIndexes);
-        for (var pivot = 0; pivot < pivotCount; pivot++)
-        {
-            var token = sourceTokens.Tokens[workspace.PivotIndexes[pivot]];
-            var candidates = postings.GetPostings(token);
-            foreach (var candidate in candidates)
-            {
-                var right = rightProfiles[candidate];
-                var tokenCount = useDescriptionTokens
-                    ? right.DescriptionTokens.Count
-                    : right.NameTokens.Count;
-                if (tokenCount == rightTokenCount)
-                {
-                    workspace.AddCandidate(candidate);
-                }
-            }
-        }
-    }
-
-    /// <summary>
-    /// 从左侧 token 中按 posting 长度选择最稀有的 token。
-    /// </summary>
-    /// <param name="tokens">左侧排序 token。</param>
-    /// <param name="pivotCount">需要选择的 token 数量。</param>
-    /// <param name="postings">token 到右侧分组内下标的倒排表。</param>
-    /// <param name="pivotIndexes">接收选中 token 下标的池化数组。</param>
-    private static void SelectRareTokens(
-        ReadOnlySpan<string> tokens,
-        int pivotCount,
-        CompactPostingIndex postings,
-        Span<int> pivotIndexes)
-    {
-        for (var pivot = 0; pivot < pivotCount; pivot++)
-        {
-            var bestIndex = -1;
-            var bestLength = int.MaxValue;
-            for (var tokenIndex = 0; tokenIndex < tokens.Length; tokenIndex++)
-            {
-                var alreadySelected = false;
-                for (var previous = 0; previous < pivot; previous++)
-                {
-                    if (pivotIndexes[previous] == tokenIndex)
-                    {
-                        alreadySelected = true;
-                        break;
-                    }
-                }
-
-                if (alreadySelected)
-                {
-                    continue;
-                }
-
-                var length = postings.GetPostingCount(tokens[tokenIndex]);
-                if (length < bestLength)
-                {
-                    bestLength = length;
-                    bestIndex = tokenIndex;
-                }
-            }
-
-            pivotIndexes[pivot] = bestIndex;
-        }
-    }
-
-    /// <summary>
-    /// 构建同一 Schema 分组内经过阈值和歧义过滤的候选分数矩阵。
-    /// </summary>
-    /// <param name="leftProfiles">左侧全部匹配档案。</param>
-    /// <param name="rightProfiles">右侧全部匹配档案。</param>
-    /// <param name="options">匹配选项。</param>
-    /// <param name="workspace">当前分组的池化工作数组。</param>
-    private static void BuildScoreMatrix(
+    /// <param name="leftProfiles">左侧 Schema 分组中的全部匹配档案。</param>
+    /// <param name="leftProfileIndexes">左侧描述桶中的组内 profile 下标。</param>
+    /// <param name="rightProfiles">右侧 Schema 分组中的全部匹配档案。</param>
+    /// <param name="rightProfileIndexes">右侧描述桶中的组内 profile 下标。</param>
+    /// <param name="workspace">当前描述桶的池化工作数组。</param>
+    private static void BuildNameScoreMatrix(
         IReadOnlyList<DeclarationMatchProfile> leftProfiles,
+        ReadOnlySpan<int> leftProfileIndexes,
         IReadOnlyList<DeclarationMatchProfile> rightProfiles,
-        AIFunctionMatchOptions options,
+        ReadOnlySpan<int> rightProfileIndexes,
         MatchWorkspace workspace)
     {
-        var columnCount = rightProfiles.Count;
-        for (var localLeft = 0; localLeft < leftProfiles.Count; localLeft++)
+        var columnCount = rightProfileIndexes.Length;
+        for (var localLeft = 0;
+             localLeft < leftProfileIndexes.Length;
+             localLeft++)
         {
-            var left = leftProfiles[localLeft];
-            var bestScore = -1.0;
-            var secondScore = -1.0;
+            var left = leftProfiles[leftProfileIndexes[localLeft]];
             var rowOffset = localLeft * columnCount;
-
-            for (var localRight = 0; localRight < columnCount; localRight++)
+            for (var localRight = 0;
+                 localRight < rightProfileIndexes.Length;
+                 localRight++)
             {
-                var right = rightProfiles[localRight];
-                var scoreIndex = rowOffset + localRight;
-                if (!TryComputeScore(
-                    left,
-                    right,
-                    options,
-                    out var score))
-                {
-                    workspace.Scores[scoreIndex] = -1;
-                    continue;
-                }
-
-                workspace.Scores[scoreIndex] = score;
-
-                if (score < options.MinimumMatchScore)
-                {
-                    continue;
-                }
-
-                if (score > bestScore)
-                {
-                    secondScore = bestScore;
-                    bestScore = score;
-                }
-                else if (score > secondScore)
-                {
-                    secondScore = score;
-                }
-            }
-
-            if (secondScore >= options.MinimumMatchScore &&
-                bestScore - secondScore < options.MinimumScoreGap)
-            {
-                for (var localRight = 0; localRight < columnCount; localRight++)
-                {
-                    var scoreIndex = rowOffset + localRight;
-                    if (workspace.Scores[scoreIndex] >= options.MinimumMatchScore)
-                    {
-                        workspace.Scores[scoreIndex] = -1;
-                    }
-                }
-
+                var right = rightProfiles[rightProfileIndexes[localRight]];
+                workspace.Scores[rowOffset + localRight] =
+                    TextSimilarity.ComputeNameSimilarity(
+                        left.NameTokens,
+                        right.NameTokens);
             }
         }
-    }
-
-    /// <summary>
-    /// 计算两个预计算档案的最终匹配分数。
-    /// </summary>
-    /// <param name="expected">权威匹配档案。</param>
-    /// <param name="actual">客户端匹配档案。</param>
-    /// <param name="options">匹配选项。</param>
-    /// <param name="score">接收综合匹配分数。</param>
-    /// <returns>描述门禁允许比较时返回 <see langword="true"/>。</returns>
-    private static bool TryComputeScore(
-        DeclarationMatchProfile expected,
-        DeclarationMatchProfile actual,
-        AIFunctionMatchOptions options,
-        out double score)
-    {
-        if (!IsDescriptionCompatible(
-            expected,
-            actual,
-            options,
-            out var descriptionScore))
-        {
-            score = 0;
-            return false;
-        }
-
-        var nameScore = TextSimilarity.ComputeNameSimilarity(
-            expected.NameTokens,
-            actual.NameTokens);
-        score = expected.HasDescription
-            ? (0.75 * nameScore) + (0.25 * descriptionScore)
-            : nameScore;
-        return true;
-    }
-
-    /// <summary>
-    /// 验证两个预计算档案的顶层描述存在性和相似度。
-    /// </summary>
-    /// <param name="expected">权威匹配档案。</param>
-    /// <param name="actual">客户端匹配档案。</param>
-    /// <param name="options">匹配选项。</param>
-    /// <param name="descriptionScore">接收双方描述的 Jaccard 相似度。</param>
-    /// <returns>描述允许参与匹配时返回 <see langword="true"/>。</returns>
-    private static bool IsDescriptionCompatible(
-        DeclarationMatchProfile expected,
-        DeclarationMatchProfile actual,
-        AIFunctionMatchOptions options,
-        out double descriptionScore)
-    {
-        if (expected.HasDescription != actual.HasDescription)
-        {
-            descriptionScore = 0;
-            return false;
-        }
-
-        if (!expected.HasDescription)
-        {
-            descriptionScore = 0;
-            return true;
-        }
-
-        descriptionScore = TextSimilarity.ComputeDescriptionJaccard(
-            expected.DescriptionTokens,
-            actual.DescriptionTokens);
-        return descriptionScore >= options.MinimumDescriptionSimilarity;
     }
 
     /// <summary>
@@ -726,25 +265,25 @@ internal static class DeclarationMatcher
     }
 
     /// <summary>
-    /// 计算最大匹配数优先、总相似度其次的全局一对一分配。
+    /// 计算最大匹配数优先、名称相似度总和其次的全局一对一分配。
     /// </summary>
     private static class MaximumWeightAssignment
     {
         /// <summary>
-        /// 查找左右分组之间的全局匹配对，并写入左侧匹配标记。
+        /// 查找描述桶内的全局匹配对，并写入左侧匹配标记。
         /// </summary>
-        /// <param name="rowCount">左侧分组声明数量。</param>
-        /// <param name="columnCount">右侧分组声明数量。</param>
-        /// <param name="workspace">当前分组的池化工作数组。</param>
-        /// <param name="minimumScore">合格匹配所需的最低分数。</param>
-        /// <param name="leftIndexes">当前分组的左侧全局下标。</param>
+        /// <param name="rowCount">描述桶左侧声明数量。</param>
+        /// <param name="columnCount">描述桶右侧声明数量。</param>
+        /// <param name="workspace">当前描述桶的池化工作数组。</param>
+        /// <param name="groupLeftIndexes">Schema 分组中的左侧全局下标。</param>
+        /// <param name="bucketLeftIndexes">描述桶中的组内 profile 下标。</param>
         /// <param name="matchedLeft">接收左侧匹配下标的栈上标记。</param>
         public static void Find(
             int rowCount,
             int columnCount,
             MatchWorkspace workspace,
-            double minimumScore,
-            IReadOnlyList<int> leftIndexes,
+            IReadOnlyList<int> groupLeftIndexes,
+            ReadOnlySpan<int> bucketLeftIndexes,
             Span<bool> matchedLeft)
         {
             var size = workspace.MatrixSize;
@@ -766,20 +305,17 @@ internal static class DeclarationMatcher
                     continue;
                 }
 
-                var score = workspace.Scores[(row - 1) * columnCount + (column - 1)];
-                if (score >= minimumScore)
-                {
-                    matchedLeft[leftIndexes[row - 1]] = true;
-                }
+                var profileIndex = bucketLeftIndexes[row - 1];
+                matchedLeft[groupLeftIndexes[profileIndex]] = true;
             }
         }
 
         /// <summary>
         /// 使用 Hungarian 算法计算最小成本完全分配。
         /// </summary>
-        /// <param name="rowCount">实际左侧分组行数。</param>
-        /// <param name="columnCount">实际右侧分组列数。</param>
-        /// <param name="workspace">当前分组的池化工作数组。</param>
+        /// <param name="rowCount">实际左侧桶行数。</param>
+        /// <param name="columnCount">实际右侧桶列数。</param>
+        /// <param name="workspace">当前描述桶的池化工作数组。</param>
         /// <param name="size">补边后的方阵边长。</param>
         private static void FindMinimumCostAssignment(
             int rowCount,
@@ -838,7 +374,8 @@ internal static class DeclarationMatcher
                     {
                         if (workspace.Used[column])
                         {
-                            workspace.RowPotential[workspace.MatchedRow[column]] += delta;
+                            workspace.RowPotential[workspace.MatchedRow[column]] +=
+                                delta;
                             workspace.ColumnPotential[column] -= delta;
                         }
                         else
@@ -854,7 +391,8 @@ internal static class DeclarationMatcher
                 do
                 {
                     var nextColumn = workspace.PreviousColumn[currentColumn];
-                    workspace.MatchedRow[currentColumn] = workspace.MatchedRow[nextColumn];
+                    workspace.MatchedRow[currentColumn] =
+                        workspace.MatchedRow[nextColumn];
                     currentColumn = nextColumn;
                 }
                 while (currentColumn != 0);
@@ -862,13 +400,13 @@ internal static class DeclarationMatcher
         }
 
         /// <summary>
-        /// 按实际分数或补边无效成本计算 Hungarian 归约前的成本。
+        /// 按实际名称分数或补边无效成本计算 Hungarian 归约前的成本。
         /// </summary>
         /// <param name="row">一基左侧行号。</param>
         /// <param name="column">一基右侧列号。</param>
-        /// <param name="rowCount">实际左侧分组行数。</param>
-        /// <param name="columnCount">实际右侧分组列数。</param>
-        /// <param name="scores">按行优先存储的候选分数矩阵。</param>
+        /// <param name="rowCount">实际左侧桶行数。</param>
+        /// <param name="columnCount">实际右侧桶列数。</param>
+        /// <param name="scores">按行优先存储的名称相似度矩阵。</param>
         /// <returns>有效候选为 <c>1 - score</c>，否则为固定无效成本。</returns>
         private static double GetCost(
             int row,
@@ -879,11 +417,7 @@ internal static class DeclarationMatcher
         {
             if (row <= rowCount && column <= columnCount)
             {
-                var score = scores[(row - 1) * columnCount + (column - 1)];
-                if (score >= 0)
-                {
-                    return 1 - score;
-                }
+                return 1 - scores[(row - 1) * columnCount + (column - 1)];
             }
 
             return InvalidCost;

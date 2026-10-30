@@ -14,11 +14,11 @@
 
 集合首次执行 `Except` 或 `Intersect` 时会线程安全地构建声明匹配索引，后续操作复用该索引。进程级服务端集合适合长期持有，请求级集合则只为本次请求构建一次索引。
 
-匹配过程使用调用级池化工作数组；当每个左侧声明最多只有一个无歧义候选时，会跳过 Hungarian 全局分配。请求侧索引使用 canonical UTF-8 Schema 指纹和紧凑 token 集合，避免保留十六进制签名字符串与每个文本的 `HashSet` 桶结构。
+匹配过程使用调用级池化工作数组；当同一条 Schema 和描述下每组最多只有一个左右声明时，会直接匹配并跳过名称分词和 Hungarian 全局分配。请求侧索引使用 canonical UTF-8 Schema 指纹和池化描述指纹，避免持久保留描述 token 集合与 `HashSet` 桶结构。
 
-达到 16 项的 Schema 分组会建立描述或名称 token postings。匹配器先使用稀有 token 生成安全候选超集，再执行精确分数、描述门禁和歧义检查；出现多个真实候选时自动回退到完整 Hungarian 全局分配。Schema 指纹先建立轻量索引，名称和描述档案只在左右共同 Schema 分组首次使用时创建。
+匹配器先按 Schema 语义指纹分组，再在分组内按描述语义指纹建立紧凑描述桶。只有同一 `(Schema, 描述)` 桶中的声明才能建立候选；描述桶出现多个左右声明时，才构建名称 token 并执行 Hungarian 全局一对一分配。名称不设置最低分或最小分差。
 
-请求侧分词会先用规范化字符跨度查询组内 token 驻留表，只有首次出现的 token 才创建字符串。Postings 使用连续数组保存所有声明下标，Schema 分组档案按需初始化；同一分组的名称和描述 token 引用集中在单个 TokenArena 中。
+请求侧描述会先进行 NFKC 规范化，再忽略大小写、空白、标点和词序，对规范化 token 集合计算 SHA-256 描述指纹。描述指纹只保存固定大小的摘要，不保留描述 token 或描述倒排索引。名称 token 只在重复描述桶需要比较名称相似度时按需构建。
 
 ## 基本用法
 
@@ -71,10 +71,10 @@ var extraOnActual = actual.Except(expected);
 - Schema 规范化会排序对象键和无顺序数组，并忽略 `title`、参数内部的 `description`、`examples` 注解。
 - 类型、参数名、required、默认值、枚举、约束、组合关系和 `$ref/$defs` 属于匹配契约。
 - 名称使用多语言 Jaccard/containment，以支持 MCP 命名空间前后缀。
-- 顶层工具描述使用独立门禁：两侧都为空或都有描述且 Jaccard 不低于 `0.95`；只有一侧为空时拒绝。
-- 顶层描述均非空时，综合分为 `0.75 × 名称相似度 + 0.25 × 描述 Jaccard`，最低匹配分为 `0.72`。
-- 最佳与次优候选的默认最小分差为 `0.08`；无法唯一区分的声明不会参与匹配。
-- 使用全局一对一分配，优先最大化匹配数量，再最大化总相似度。
+- 顶层工具描述使用硬过滤：NFKC 规范化后忽略大小写、空白、标点和词序，要求规范化 token 集合完全相等。
+- 两侧描述均为空或均只包含标点时视为相同；一侧没有描述 token、另一侧存在描述 token 时拒绝。
+- 同一 `(Schema, 描述)` 桶内的名称相似度不设最低门槛，只用于一对一分配合。
+- 使用全局一对一分配，优先最大化匹配数量，再最大化名称相似度总和。
 
 默认限制：
 
@@ -89,7 +89,7 @@ var extraOnActual = actual.Except(expected);
 
 参数 Schema 内部的 `description` 不参与匹配，但它也可能进入模型上下文，因此本库不会消除该独立提示注入风险。
 
-`0.72`、`0.08` 和 `0.95` 是保守默认值，生产使用前应使用脱敏的合法与异常工具样本进行校准。
+顶层工具描述现在是强匹配契约。服务端文案、翻译或客户端元数据更新后，即使参数 Schema 和名称兼容，描述 token 集合不同也会导致不匹配。升级到本版本时不能继续配置 `MinimumMatchScore`、`MinimumScoreGap` 或 `MinimumDescriptionSimilarity`。
 
 ## 构建与测试
 
@@ -114,4 +114,4 @@ dotnet run --project benchmarks/AIFunctionSetMatcher.Benchmarks/AIFunctionSetMat
 dotnet run --project benchmarks/AIFunctionSetMatcher.Benchmarks/AIFunctionSetMatcher.Benchmarks.csproj --configuration Release --no-build -- --list flat
 ```
 
-本机原始基线见 [`docs/benchmarks/2026-10-29-ai-function-set-matcher.md`](docs/benchmarks/2026-10-29-ai-function-set-matcher.md)，匹配索引缓存优化结果见 [`docs/benchmarks/2026-10-30-ai-function-set-matcher-optimization.md`](docs/benchmarks/2026-10-30-ai-function-set-matcher-optimization.md)，全链路分配优化结果见 [`docs/benchmarks/2026-10-30-ai-function-set-matcher-allocation-optimization.md`](docs/benchmarks/2026-10-30-ai-function-set-matcher-allocation-optimization.md)，稀疏候选优化结果见 [`docs/benchmarks/2026-10-30-ai-function-set-matcher-sparse-candidate-optimization.md`](docs/benchmarks/2026-10-30-ai-function-set-matcher-sparse-candidate-optimization.md)，请求侧 token/postings 优化结果见 [`docs/benchmarks/2026-10-30-ai-function-set-matcher-request-profile-optimization.md`](docs/benchmarks/2026-10-30-ai-function-set-matcher-request-profile-optimization.md)。基准结果依赖 CPU、运行时和后台负载，不用于 CI 硬性性能断言。
+本机原始基线和历史优化结果保存在 `docs/benchmarks`。Schema 与描述硬过滤基准记录见 [`docs/benchmarks/2026-10-30-ai-function-set-matcher-hard-filter.md`](docs/benchmarks/2026-10-30-ai-function-set-matcher-hard-filter.md)。基准结果依赖 CPU、运行时和后台负载，不用于 CI 硬性性能断言。

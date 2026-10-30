@@ -25,21 +25,6 @@ internal static class TextSimilarity
     }
 
     /// <summary>
-    /// 将函数描述转换为 token 集合。
-    /// </summary>
-    /// <param name="value">函数描述。</param>
-    /// <param name="interner">可选的组内 token 驻留器。</param>
-    /// <param name="arena">接收有序 token 的 Schema 组 Arena。</param>
-    /// <returns>描述 token 集合。</returns>
-    public static TokenSet TokenizeDescription(
-        string value,
-        TokenInterner? interner,
-        TokenArena arena)
-    {
-        return Tokenize(value, includeCjkBigrams: true, interner, arena);
-    }
-
-    /// <summary>
     /// 使用预计算 token 计算两个函数名称的词汇相似度。
     /// </summary>
     /// <param name="leftTokens">左侧名称 token。</param>
@@ -56,17 +41,36 @@ internal static class TextSimilarity
     }
 
     /// <summary>
-    /// 使用预计算 token 计算两个函数描述的 Jaccard 相似度。
+    /// 计算规范化描述 token 集合的稳定语义指纹。
     /// </summary>
-    /// <param name="leftTokens">左侧描述 token。</param>
-    /// <param name="rightTokens">右侧描述 token。</param>
-    /// <returns>位于 0 到 1 之间的 Jaccard 相似度。</returns>
-    public static double ComputeDescriptionJaccard(
-        TokenSet leftTokens,
-        TokenSet rightTokens)
+    /// <param name="value">要计算指纹的函数描述。</param>
+    /// <param name="workspace">可复用的描述指纹工作区。</param>
+    /// <returns>描述语义指纹。</returns>
+    public static DescriptionFingerprint ComputeDescriptionFingerprint(
+        string value,
+        DescriptionFingerprintWorkspace workspace)
     {
-        var intersection = leftTokens.CountIntersection(rightTokens);
-        return ComputeJaccard(leftTokens.Count, rightTokens.Count, intersection);
+        var tokens = new TokenSetBuilder(tokenInterner: null);
+        try
+        {
+            AddNormalizedTokens(
+                value,
+                includeCjkBigrams: true,
+                ref tokens);
+            workspace.Reset();
+            workspace.Writer.WriteStartArray();
+            foreach (var token in tokens.GetSortedTokens())
+            {
+                workspace.Writer.WriteStringValue(token);
+            }
+
+            workspace.Writer.WriteEndArray();
+            return workspace.ComputeFingerprint();
+        }
+        finally
+        {
+            tokens.Dispose();
+        }
     }
 
     /// <summary>
@@ -115,50 +119,63 @@ internal static class TextSimilarity
         TokenInterner? interner,
         TokenArena arena)
     {
-        var normalized = RequiresNormalization(value)
-            ? value.Normalize(NormalizationForm.FormKC)
-            : value;
         var tokens = new TokenSetBuilder(interner);
         try
         {
-            var text = normalized.AsSpan();
-            var wordStart = -1;
-            var position = 0;
-
-            foreach (var rune in normalized.EnumerateRunes())
-            {
-                if (Rune.IsLetterOrDigit(rune))
-                {
-                    if (wordStart < 0)
-                    {
-                        wordStart = position;
-                    }
-                }
-                else if (wordStart >= 0)
-                {
-                    FlushWord(
-                        text.Slice(wordStart, position - wordStart),
-                        includeCjkBigrams,
-                        ref tokens);
-                    wordStart = -1;
-                }
-
-                position += rune.Utf16SequenceLength;
-            }
-
-            if (wordStart >= 0)
-            {
-                FlushWord(
-                    text.Slice(wordStart, position - wordStart),
-                    includeCjkBigrams,
-                    ref tokens);
-            }
-
+            AddNormalizedTokens(value, includeCjkBigrams, ref tokens);
             return tokens.Build(arena);
         }
         finally
         {
             tokens.Dispose();
+        }
+    }
+
+    /// <summary>
+    /// 将规范化文本中的标识符 token 添加到集合构建器。
+    /// </summary>
+    /// <param name="value">要分词的文本。</param>
+    /// <param name="includeCjkBigrams">是否将中文连续文本切分为双字 token。</param>
+    /// <param name="tokens">接收 token 的集合构建器。</param>
+    private static void AddNormalizedTokens(
+        string value,
+        bool includeCjkBigrams,
+        ref TokenSetBuilder tokens)
+    {
+        var normalized = RequiresNormalization(value)
+            ? value.Normalize(NormalizationForm.FormKC)
+            : value;
+        var text = normalized.AsSpan();
+        var wordStart = -1;
+        var position = 0;
+
+        foreach (var rune in normalized.EnumerateRunes())
+        {
+            if (Rune.IsLetterOrDigit(rune))
+            {
+                if (wordStart < 0)
+                {
+                    wordStart = position;
+                }
+            }
+            else if (wordStart >= 0)
+            {
+                FlushWord(
+                    text.Slice(wordStart, position - wordStart),
+                    includeCjkBigrams,
+                    ref tokens);
+                wordStart = -1;
+            }
+
+            position += rune.Utf16SequenceLength;
+        }
+
+        if (wordStart >= 0)
+        {
+            FlushWord(
+                text.Slice(wordStart, position - wordStart),
+                includeCjkBigrams,
+                ref tokens);
         }
     }
 

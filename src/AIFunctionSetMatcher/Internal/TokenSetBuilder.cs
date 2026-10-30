@@ -84,14 +84,24 @@ internal ref struct TokenSetBuilder
     /// <returns>新的文本 token 集合。</returns>
     public TokenSet Build(TokenArena arena)
     {
+        var sortedTokens = GetSortedTokens();
+        var offset = arena.Append(sortedTokens);
+        return new TokenSet(arena, offset, count);
+    }
+
+    /// <summary>
+    /// 获取按序号排序且已去重的临时 token 跨度。
+    /// </summary>
+    /// <returns>仅在当前构建器释放前有效的 token 跨度。</returns>
+    public ReadOnlySpan<string> GetSortedTokens()
+    {
         var sortedTokens = buffer.AsSpan(0, count);
         if (count > 0)
         {
             sortedTokens.Sort(StringComparer.Ordinal);
         }
 
-        var offset = arena.Append(sortedTokens);
-        return new TokenSet(arena, offset, count);
+        return sortedTokens;
     }
 
     /// <summary>

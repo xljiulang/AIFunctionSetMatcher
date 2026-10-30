@@ -464,7 +464,7 @@ public sealed class AIFunctionDeclarationSetTests
     }
 
     [Fact]
-    public void Except_keeps_left_declaration_when_candidates_are_ambiguous()
+    public void Except_matches_single_left_against_duplicate_right_candidates()
     {
         const string schema = """{ "type": "object" }""";
         var left = AIFunctionDeclarationSet.From(
@@ -477,7 +477,7 @@ public sealed class AIFunctionDeclarationSetTests
 
         var remainder = left.Except(right);
 
-        Assert.Equal("sync", Assert.Single(remainder).Name);
+        Assert.Empty(remainder);
     }
 
     [Fact]
@@ -1038,23 +1038,6 @@ public sealed class AIFunctionDeclarationSetTests
     }
 
     [Fact]
-    public void Except_rejects_an_out_of_range_match_score()
-    {
-        const string schema = """{ "type": "object" }""";
-        var set = AIFunctionDeclarationSet.From(
-            [Declaration("get_weather", "Get weather.", schema)]);
-        var options = new AIFunctionMatchOptions
-        {
-            MinimumMatchScore = 1.1,
-        };
-
-        var exception = Assert.Throws<ArgumentOutOfRangeException>(
-            () => set.Except(set, options));
-
-        Assert.Equal("MinimumMatchScore", exception.ParamName);
-    }
-
-    [Fact]
     public void From_json_wraps_invalid_next_cursor_types_as_parse_errors()
     {
         using var json = JsonDocument.Parse(
@@ -1381,7 +1364,7 @@ public sealed class AIFunctionDeclarationSetTests
     }
 
     [Fact]
-    public void Intersect_excludes_ambiguous_candidates()
+    public void Intersect_matches_single_left_against_duplicate_right_candidates()
     {
         const string schema = """{ "type": "object" }""";
         var left = AIFunctionDeclarationSet.From(
@@ -1394,7 +1377,7 @@ public sealed class AIFunctionDeclarationSetTests
 
         var intersection = left.Intersect(right);
 
-        Assert.Empty(intersection);
+        Assert.Equal("sync", Assert.Single(intersection).Name);
     }
 
     [Fact]
@@ -1463,17 +1446,17 @@ public sealed class AIFunctionDeclarationSetTests
             [Declaration("get_weather", "Get weather.", schema)]);
         var options = new AIFunctionMatchOptions
         {
-            MinimumScoreGap = -0.1,
+            MaximumSchemaBytes = 0,
         };
 
         var exception = Assert.Throws<ArgumentOutOfRangeException>(
             () => set.Intersect(set, options));
 
-        Assert.Equal("MinimumScoreGap", exception.ParamName);
+        Assert.Equal("MaximumSchemaBytes", exception.ParamName);
     }
 
     [Fact]
-    public void Description_gate_rejects_a_large_description_rewrite()
+    public void Description_hard_filter_rejects_a_large_description_rewrite()
     {
         var schema = """{ "type": "object" }""";
         var expectedDeclaration = Declaration(
@@ -1495,7 +1478,7 @@ public sealed class AIFunctionDeclarationSetTests
     }
 
     [Fact]
-    public void Description_gate_rejects_similarity_below_the_independent_threshold()
+    public void Description_hard_filter_rejects_a_token_subset()
     {
         const string schema = """{ "type": "object" }""";
         var expected = AIFunctionDeclarationSet.From(
@@ -1519,31 +1502,7 @@ public sealed class AIFunctionDeclarationSetTests
     }
 
     [Fact]
-    public void Description_gate_accepts_jaccard_equal_to_the_threshold()
-    {
-        const string schema = """{ "type": "object" }""";
-        var expected = AIFunctionDeclarationSet.From(
-            [
-                Declaration(
-                    "rank_items",
-                    "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron pi rho sigma tau upsilon",
-                    schema),
-            ]);
-        var actual = AIFunctionDeclarationSet.From(
-            [
-                Declaration(
-                    "rank_items",
-                    "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron pi rho sigma tau",
-                    schema),
-            ]);
-
-        var intersection = expected.Intersect(actual);
-
-        Assert.Single(intersection);
-    }
-
-    [Fact]
-    public void Description_gate_requires_symmetric_description_presence()
+    public void Description_hard_filter_requires_symmetric_description_presence()
     {
         const string schema = """{ "type": "object" }""";
         var withDescription = AIFunctionDeclarationSet.From(
@@ -1567,7 +1526,7 @@ public sealed class AIFunctionDeclarationSetTests
     }
 
     [Fact]
-    public void Description_gate_ignores_case_whitespace_and_punctuation()
+    public void Description_hard_filter_ignores_case_whitespace_and_punctuation()
     {
         const string schema = """{ "type": "object" }""";
         var expected = AIFunctionDeclarationSet.From(
@@ -1591,7 +1550,31 @@ public sealed class AIFunctionDeclarationSetTests
     }
 
     [Fact]
-    public void Description_gate_normalizes_unicode_compatibility_characters()
+    public void Description_hard_filter_ignores_word_order()
+    {
+        const string schema = """{ "type": "object" }""";
+        var expected = AIFunctionDeclarationSet.From(
+            [
+                Declaration(
+                    "get_weather",
+                    "Get current weather for a city.",
+                    schema),
+            ]);
+        var actual = AIFunctionDeclarationSet.From(
+            [
+                Declaration(
+                    "get_weather",
+                    "city a for weather current get",
+                    schema),
+            ]);
+
+        var intersection = expected.Intersect(actual);
+
+        Assert.Single(intersection);
+    }
+
+    [Fact]
+    public void Description_hard_filter_normalizes_unicode_compatibility_characters()
     {
         const string schema = """{ "type": "object" }""";
         var expected = AIFunctionDeclarationSet.From(
@@ -1608,6 +1591,20 @@ public sealed class AIFunctionDeclarationSetTests
                     "Ｇｅｔ　weather",
                     schema),
             ]);
+
+        var intersection = expected.Intersect(actual);
+
+        Assert.Single(intersection);
+    }
+
+    [Fact]
+    public void Description_hard_filter_treats_punctuation_only_as_empty()
+    {
+        const string schema = """{ "type": "object" }""";
+        var expected = AIFunctionDeclarationSet.From(
+            [Declaration("get_weather", string.Empty, schema)]);
+        var actual = AIFunctionDeclarationSet.From(
+            [Declaration("get_weather", " ... --- ", schema)]);
 
         var intersection = expected.Intersect(actual);
 
@@ -1658,24 +1655,7 @@ public sealed class AIFunctionDeclarationSetTests
     }
 
     [Fact]
-    public void Minimum_description_similarity_rejects_invalid_values()
-    {
-        const string schema = """{ "type": "object" }""";
-        var set = AIFunctionDeclarationSet.From(
-            [Declaration("get_weather", "Get weather.", schema)]);
-        var options = new AIFunctionMatchOptions
-        {
-            MinimumDescriptionSimilarity = 1.1,
-        };
-
-        var exception = Assert.Throws<ArgumentOutOfRangeException>(
-            () => set.Intersect(set, options));
-
-        Assert.Equal("MinimumDescriptionSimilarity", exception.ParamName);
-    }
-
-    [Fact]
-    public void Default_description_similarity_rejects_scores_below_095()
+    public void Description_hard_filter_rejects_different_token_sets()
     {
         const string schema = """{ "type": "object" }""";
         var expected = AIFunctionDeclarationSet.From(
@@ -1699,7 +1679,7 @@ public sealed class AIFunctionDeclarationSetTests
     }
 
     [Fact]
-    public void Description_gate_does_not_apply_prompt_risk_classification()
+    public void Description_hard_filter_rejects_prompt_risk_append()
     {
         const string schema = """{ "type": "object" }""";
         var expected = AIFunctionDeclarationSet.From(
@@ -1711,18 +1691,52 @@ public sealed class AIFunctionDeclarationSetTests
                     "Get current weather. Do not call this tool.",
                     schema),
             ]);
-        var options = new AIFunctionMatchOptions
-        {
-            MinimumDescriptionSimilarity = 0,
-        };
+        var intersection = expected.Intersect(actual);
 
-        var intersection = expected.Intersect(actual, options);
-
-        Assert.Single(intersection);
+        Assert.Empty(intersection);
     }
 
     [Fact]
-    public void Matching_reuses_the_cached_profiles()
+    public void Intersect_matches_same_schema_and_description_regardless_of_name_similarity()
+    {
+        const string schema = """{ "type": "object" }""";
+        var expectedDeclaration = Declaration(
+            "get_weather",
+            "Fetch current conditions.",
+            schema);
+        var expected = AIFunctionDeclarationSet.From([expectedDeclaration]);
+        var actual = AIFunctionDeclarationSet.From(
+            [Declaration("delete_invoice", "Fetch current conditions.", schema)]);
+
+        var intersection = expected.Intersect(actual);
+
+        Assert.Same(expectedDeclaration, Assert.Single(intersection));
+    }
+
+    [Fact]
+    public void Intersect_assigns_all_duplicate_description_candidates_by_name_similarity()
+    {
+        const string schema = """{ "type": "object" }""";
+        const string description = "Perform records operation.";
+        var leftDeclarations = new[]
+        {
+            Declaration("alpha", description, schema),
+            Declaration("beta", description, schema),
+        };
+        var left = AIFunctionDeclarationSet.From(leftDeclarations);
+        var right = AIFunctionDeclarationSet.From(
+            [
+                Declaration("gamma", description, schema),
+                Declaration("delta", description, schema),
+            ]);
+
+        var intersection = left.Intersect(right);
+
+        Assert.Equal(leftDeclarations, intersection);
+    }
+
+    [Fact]
+    public void Matching_reuses_the_cached_index()
     {
         using var schema = JsonDocument.Parse("""{ "type": "object" }""");
         var leftDeclaration = new CountingDeclaration(
@@ -1749,7 +1763,7 @@ public sealed class AIFunctionDeclarationSetTests
     }
 
     [Fact]
-    public void Concurrent_first_matching_builds_each_profile_once()
+    public void Singleton_hard_filter_match_does_not_read_names()
     {
         using var schema = JsonDocument.Parse("""{ "type": "object" }""");
         var leftDeclaration = new CountingDeclaration(
@@ -1757,7 +1771,7 @@ public sealed class AIFunctionDeclarationSetTests
             "Get current weather.",
             schema.RootElement.Clone());
         var rightDeclaration = new CountingDeclaration(
-            "get_weather",
+            "get_forecast",
             "Get current weather.",
             schema.RootElement.Clone());
         var left = AIFunctionDeclarationSet.From([leftDeclaration]);
@@ -1765,10 +1779,48 @@ public sealed class AIFunctionDeclarationSetTests
         leftDeclaration.ResetReadCounts();
         rightDeclaration.ResetReadCounts();
 
+        var intersection = left.Intersect(right);
+
+        Assert.Single(intersection);
+        Assert.Equal(0, leftDeclaration.NameReadCount);
+        Assert.Equal(0, rightDeclaration.NameReadCount);
+    }
+
+    [Fact]
+    public void Concurrent_first_matching_builds_each_name_profile_once()
+    {
+        using var schema = JsonDocument.Parse("""{ "type": "object" }""");
+        var leftFirst = new CountingDeclaration(
+            "get_weather",
+            "Get current weather.",
+            schema.RootElement.Clone());
+        var leftSecond = new CountingDeclaration(
+            "get_forecast",
+            "Get current weather.",
+            schema.RootElement.Clone());
+        var rightFirst = new CountingDeclaration(
+            "get_weather",
+            "Get current weather.",
+            schema.RootElement.Clone());
+        var rightSecond = new CountingDeclaration(
+            "get_forecast",
+            "Get current weather.",
+            schema.RootElement.Clone());
+        var left = AIFunctionDeclarationSet.From(
+            [leftFirst, leftSecond]);
+        var right = AIFunctionDeclarationSet.From(
+            [rightFirst, rightSecond]);
+        leftFirst.ResetReadCounts();
+        leftSecond.ResetReadCounts();
+        rightFirst.ResetReadCounts();
+        rightSecond.ResetReadCounts();
+
         Parallel.For(0, 32, _ => left.Except(right));
 
-        Assert.Equal(1, leftDeclaration.NameReadCount);
-        Assert.Equal(1, rightDeclaration.NameReadCount);
+        Assert.Equal(1, leftFirst.NameReadCount);
+        Assert.Equal(1, leftSecond.NameReadCount);
+        Assert.Equal(1, rightFirst.NameReadCount);
+        Assert.Equal(1, rightSecond.NameReadCount);
     }
 
     [Fact]
@@ -1800,35 +1852,6 @@ public sealed class AIFunctionDeclarationSetTests
                 new AIFunctionMatchOptions { MaximumSchemaBytes = 32 }));
 
         Assert.Contains("JsonSchema", exception.Message, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public void Cached_profiles_still_honor_per_call_description_thresholds()
-    {
-        const string schema = """{ "type": "object" }""";
-        var left = AIFunctionDeclarationSet.From(
-            [
-                Declaration(
-                    "rank_items",
-                    "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron",
-                    schema),
-            ]);
-        var right = AIFunctionDeclarationSet.From(
-            [
-                Declaration(
-                    "rank_items",
-                    "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi",
-                    schema),
-            ]);
-
-        Assert.Single(
-            left.Intersect(
-                right,
-                new AIFunctionMatchOptions { MinimumDescriptionSimilarity = 0.90 }));
-        Assert.Empty(
-            left.Intersect(
-                right,
-                new AIFunctionMatchOptions { MinimumDescriptionSimilarity = 0.96 }));
     }
 
     [Fact]
@@ -1906,7 +1929,7 @@ public sealed class AIFunctionDeclarationSetTests
     }
 
     [Fact]
-    public void Intersect_returns_empty_when_all_candidates_fail_the_score_threshold()
+    public void Intersect_returns_empty_when_description_fingerprints_do_not_match()
     {
         const string schema = """{ "type": "object" }""";
         var left = AIFunctionDeclarationSet.From(

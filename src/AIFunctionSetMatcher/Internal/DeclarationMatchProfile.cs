@@ -11,16 +11,12 @@ internal sealed class DeclarationMatchProfile
         AIFunctionDeclaration declaration,
         SchemaFingerprint schemaFingerprint,
         int schemaByteCount,
-        TokenSet nameTokens,
-        TokenSet descriptionTokens,
-        bool hasDescription)
+        TokenSet nameTokens)
     {
         Declaration = declaration;
         SchemaFingerprint = schemaFingerprint;
         SchemaByteCount = schemaByteCount;
         NameTokens = nameTokens;
-        DescriptionTokens = descriptionTokens;
-        HasDescription = hasDescription;
     }
 
     /// <summary>
@@ -44,23 +40,13 @@ internal sealed class DeclarationMatchProfile
     public TokenSet NameTokens { get; }
 
     /// <summary>
-    /// 获取预计算的描述 token 集合。
-    /// </summary>
-    public TokenSet DescriptionTokens { get; }
-
-    /// <summary>
-    /// 获取描述是否存在且包含非空白字符。
-    /// </summary>
-    public bool HasDescription { get; }
-
-    /// <summary>
     /// 为函数声明创建预计算匹配档案。
     /// </summary>
     /// <param name="declaration">要建立档案的函数声明。</param>
     /// <param name="schemaFingerprint">已计算的 Schema 语义指纹。</param>
     /// <param name="schemaByteCount">已计算的 Schema UTF-8 字节数。</param>
     /// <param name="interner">可选的组内 token 驻留器。</param>
-    /// <param name="arena">接收名称和描述 token 的 Schema 组 Arena。</param>
+    /// <param name="arena">接收名称 token 的 Schema 组 Arena。</param>
     /// <returns>新的匹配档案。</returns>
     public static DeclarationMatchProfile Create(
         AIFunctionDeclaration declaration,
@@ -70,17 +56,11 @@ internal sealed class DeclarationMatchProfile
         TokenInterner? interner = null)
     {
         var name = declaration.Name;
-        var description = declaration.Description;
-        var hasDescription = !string.IsNullOrWhiteSpace(description);
         return new DeclarationMatchProfile(
             declaration,
             schemaFingerprint,
             schemaByteCount,
-            TextSimilarity.TokenizeName(name, interner, arena),
-            hasDescription
-                ? TextSimilarity.TokenizeDescription(description, interner, arena)
-                : TokenSet.Empty,
-            hasDescription);
+            TextSimilarity.TokenizeName(name, interner, arena));
     }
 
     /// <summary>

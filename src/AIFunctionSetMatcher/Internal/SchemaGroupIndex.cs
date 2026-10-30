@@ -8,7 +8,7 @@ internal sealed class SchemaGroupIndex
     private readonly DeclarationSchemaEntry[] entries;
     private readonly int[] globalIndexes;
     private DeclarationMatchProfile[]? profiles;
-    private SchemaGroupQueryIndex? queryIndex;
+    private DescriptionBucketIndex? _descriptionBuckets;
 
     /// <summary>
     /// 初始化 Schema 声明分组。
@@ -61,13 +61,13 @@ internal sealed class SchemaGroupIndex
     }
 
     /// <summary>
-    /// 获取线程安全惰性构建的右侧查询索引。
+    /// 获取线程安全惰性构建的描述桶索引。
     /// </summary>
-    public SchemaGroupQueryIndex QueryIndex
+    public DescriptionBucketIndex DescriptionBuckets
     {
         get
         {
-            var current = Volatile.Read(ref queryIndex);
+            var current = Volatile.Read(ref _descriptionBuckets);
             if (current is not null)
             {
                 return current;
@@ -75,11 +75,13 @@ internal sealed class SchemaGroupIndex
 
             lock (globalIndexes)
             {
-                current = queryIndex;
+                current = _descriptionBuckets;
                 if (current is null)
                 {
-                    current = SchemaGroupQueryIndex.Create(Profiles);
-                    Volatile.Write(ref queryIndex, current);
+                    current = DescriptionBucketIndex.Create(
+                        entries,
+                        globalIndexes);
+                    Volatile.Write(ref _descriptionBuckets, current);
                 }
 
                 return current;

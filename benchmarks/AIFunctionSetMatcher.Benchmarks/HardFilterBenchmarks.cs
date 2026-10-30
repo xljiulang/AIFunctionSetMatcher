@@ -7,19 +7,20 @@ using System.Text.Json;
 namespace AIFunctionSetMatcher.Benchmarks;
 
 /// <summary>
-/// 测量稀疏候选、名称回退和 Schema 分组路径。
+/// 测量 Schema 与描述硬过滤、名称分配和 Schema 分组路径。
 /// </summary>
 [MemoryDiagnoser]
-public class SparseCandidateBenchmarks
+public class HardFilterBenchmarks
 {
-    private readonly Consumer consumer = new();
+    private readonly Consumer _consumer = new();
     private AIFunctionDeclaration[] requestDeclarations = null!;
     private AIFunctionDeclaration[] requestWithExtraDeclarations = null!;
     private AIFunctionDeclarationSet left = null!;
     private AIFunctionDeclarationSet uniqueRight = null!;
+    private AIFunctionDeclarationSet nameOnlyLeft = null!;
     private AIFunctionDeclarationSet nameOnlyRight = null!;
-    private AIFunctionDeclarationSet ambiguousLeft = null!;
-    private AIFunctionDeclarationSet ambiguousRight = null!;
+    private AIFunctionDeclarationSet duplicateDescriptionLeft = null!;
+    private AIFunctionDeclarationSet duplicateDescriptionRight = null!;
     private AIFunctionDeclarationSet differentSchemaRight = null!;
 
     /// <summary>
@@ -29,7 +30,7 @@ public class SparseCandidateBenchmarks
     public int Count { get; set; }
 
     /// <summary>
-    /// 准备确定性稀疏候选输入。
+    /// 准备确定性硬过滤输入。
     /// </summary>
     [GlobalSetup]
     public void Setup()
@@ -72,19 +73,25 @@ public class SparseCandidateBenchmarks
 
         left = AIFunctionDeclarationSet.From(requestDeclarations);
         uniqueRight = AIFunctionDeclarationSet.From(requestDeclarations);
+        nameOnlyLeft = AIFunctionDeclarationSet.From(
+            CreateDeclarations(
+                index => CreateDeclaration(
+                    $"tool_{index:D3}",
+                    string.Empty,
+                    schemaElement)));
         nameOnlyRight = AIFunctionDeclarationSet.From(
             CreateDeclarations(
                 index => CreateDeclaration(
                     $"mcp__tool_{index:D3}",
                     string.Empty,
                     schemaElement)));
-        ambiguousLeft = AIFunctionDeclarationSet.From(
+        duplicateDescriptionLeft = AIFunctionDeclarationSet.From(
             CreateDeclarations(
                 index => CreateDeclaration(
                     $"tool_alpha_{index:D3}",
                     "Process benchmark records.",
                     schemaElement)));
-        ambiguousRight = AIFunctionDeclarationSet.From(
+        duplicateDescriptionRight = AIFunctionDeclarationSet.From(
             CreateDeclarations(
                 index => CreateDeclaration(
                     $"mcp__tool_alpha_{index:D3}",
@@ -99,30 +106,31 @@ public class SparseCandidateBenchmarks
     }
 
     /// <summary>
-    /// 测量描述唯一时的稀疏候选交集。
+    /// 测量描述唯一时绕过名称 profile 的直接匹配。
     /// </summary>
     [Benchmark]
     public void Intersect_UniqueDescription()
     {
-        consumer.Consume(left.Intersect(uniqueRight));
+        _consumer.Consume(left.Intersect(uniqueRight));
     }
 
     /// <summary>
-    /// 测量无描述工具使用名称 token 的稀疏交集。
+    /// 测量无描述工具使用名称 token 的全局分配。
     /// </summary>
     [Benchmark]
     public void Intersect_NameOnly()
     {
-        consumer.Consume(left.Intersect(nameOnlyRight));
+        _consumer.Consume(nameOnlyLeft.Intersect(nameOnlyRight));
     }
 
     /// <summary>
-    /// 测量共享描述导致候选冲突时回退 Hungarian 的交集。
+    /// 测量共享描述使用 Hungarian 名称分配的交集。
     /// </summary>
     [Benchmark]
-    public void Intersect_AmbiguousFallback()
+    public void Intersect_DuplicateDescriptionAssignment()
     {
-        consumer.Consume(ambiguousLeft.Intersect(ambiguousRight));
+        _consumer.Consume(
+            duplicateDescriptionLeft.Intersect(duplicateDescriptionRight));
     }
 
     /// <summary>
@@ -131,7 +139,7 @@ public class SparseCandidateBenchmarks
     [Benchmark]
     public void Intersect_NoSharedSchema()
     {
-        consumer.Consume(left.Intersect(differentSchemaRight));
+        _consumer.Consume(left.Intersect(differentSchemaRight));
     }
 
     /// <summary>
@@ -140,7 +148,7 @@ public class SparseCandidateBenchmarks
     [Benchmark]
     public void Intersect_RequestWithExtraSchema()
     {
-        consumer.Consume(
+        _consumer.Consume(
             left.Intersect(
                 AIFunctionDeclarationSet.From(requestWithExtraDeclarations)));
     }

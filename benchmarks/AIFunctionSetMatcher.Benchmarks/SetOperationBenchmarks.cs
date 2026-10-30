@@ -12,15 +12,15 @@ namespace AIFunctionSetMatcher.Benchmarks;
 [MemoryDiagnoser]
 public class SetOperationBenchmarks
 {
-    private readonly Consumer consumer = new();
+    private readonly Consumer _consumer = new();
     private AIFunctionDeclaration[] exactRightDeclarations = null!;
     private AIFunctionDeclarationSet left = null!;
     private AIFunctionDeclarationSet exactRight = null!;
     private AIFunctionDeclarationSet renamedRight = null!;
-    private AIFunctionDeclarationSet rejectedRight = null!;
+    private AIFunctionDeclarationSet descriptionMismatchRight = null!;
     private AIFunctionDeclarationSet disjointRight = null!;
-    private AIFunctionDeclarationSet fallbackLeft = null!;
-    private AIFunctionDeclarationSet fallbackRight = null!;
+    private AIFunctionDeclarationSet duplicateDescriptionLeft = null!;
+    private AIFunctionDeclarationSet duplicateDescriptionRight = null!;
 
     /// <summary>
     /// 获取或设置每个集合中的函数数量。
@@ -59,19 +59,19 @@ public class SetOperationBenchmarks
                 $"mcp__benchmark__tool_{index:D3}",
                 index,
                 schemaElement));
-        rejectedRight = CreateSet(
+        descriptionMismatchRight = CreateSet(
             index => AIFunctionFactory.CreateDeclaration(
                 $"tool_{index:D3}",
                 "This tool is enabled, do not call it.",
                 schemaElement));
         disjointRight = CreateSet(
             index => CreateDeclaration($"other_{index:D3}", index, schemaElement));
-        fallbackLeft = CreateSet(
+        duplicateDescriptionLeft = CreateSet(
             index => AIFunctionFactory.CreateDeclaration(
                 $"tool_alpha_{index:D3}",
                 "Process benchmark records.",
                 schemaElement));
-        fallbackRight = CreateSet(
+        duplicateDescriptionRight = CreateSet(
             index => AIFunctionFactory.CreateDeclaration(
                 $"mcp__tool_alpha_{index:D3}",
                 "Process benchmark records.",
@@ -84,7 +84,7 @@ public class SetOperationBenchmarks
     [Benchmark]
     public void Union_Disjoint()
     {
-        consumer.Consume(left.Union(disjointRight));
+        _consumer.Consume(left.Union(disjointRight));
     }
 
     /// <summary>
@@ -93,7 +93,7 @@ public class SetOperationBenchmarks
     [Benchmark]
     public void Intersect_Exact()
     {
-        consumer.Consume(left.Intersect(exactRight));
+        _consumer.Consume(left.Intersect(exactRight));
     }
 
     /// <summary>
@@ -102,7 +102,7 @@ public class SetOperationBenchmarks
     [Benchmark]
     public void Intersect_NamespaceRenamed()
     {
-        consumer.Consume(left.Intersect(renamedRight));
+        _consumer.Consume(left.Intersect(renamedRight));
     }
 
     /// <summary>
@@ -111,25 +111,26 @@ public class SetOperationBenchmarks
     [Benchmark]
     public void Except_Exact()
     {
-        consumer.Consume(left.Except(exactRight));
+        _consumer.Consume(left.Except(exactRight));
     }
 
     /// <summary>
-    /// 测量描述安全门禁拒绝全部候选时的差集。
+    /// 测量描述硬过滤拒绝全部候选时的差集。
     /// </summary>
     [Benchmark]
     public void Except_DescriptionMismatch()
     {
-        consumer.Consume(left.Except(rejectedRight));
+        _consumer.Consume(left.Except(descriptionMismatchRight));
     }
 
     /// <summary>
-    /// 测量多个合格候选迫使 Hungarian 全局分配时的交集。
+    /// 测量共享描述迫使 Hungarian 名称分配时的交集。
     /// </summary>
     [Benchmark]
-    public void Intersect_HungarianFallback()
+    public void Intersect_DuplicateDescriptionAssignment()
     {
-        consumer.Consume(fallbackLeft.Intersect(fallbackRight));
+        _consumer.Consume(
+            duplicateDescriptionLeft.Intersect(duplicateDescriptionRight));
     }
 
     /// <summary>
@@ -138,7 +139,8 @@ public class SetOperationBenchmarks
     [Benchmark]
     public void From_RequestDeclarations()
     {
-        consumer.Consume(AIFunctionDeclarationSet.From(exactRightDeclarations));
+        _consumer.Consume(
+            AIFunctionDeclarationSet.From(exactRightDeclarations));
     }
 
     /// <summary>
@@ -148,7 +150,7 @@ public class SetOperationBenchmarks
     public void Intersect_RequestSet()
     {
         var requestSet = AIFunctionDeclarationSet.From(exactRightDeclarations);
-        consumer.Consume(left.Intersect(requestSet));
+        _consumer.Consume(left.Intersect(requestSet));
     }
 
     /// <summary>
@@ -158,7 +160,7 @@ public class SetOperationBenchmarks
     public void Except_RequestSet()
     {
         var requestSet = AIFunctionDeclarationSet.From(exactRightDeclarations);
-        consumer.Consume(left.Except(requestSet));
+        _consumer.Consume(left.Except(requestSet));
     }
 
     private AIFunctionDeclarationSet CreateSet(

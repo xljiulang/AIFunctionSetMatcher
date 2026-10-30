@@ -5,9 +5,9 @@ using Xunit;
 namespace AIFunctionSetMatcher.Tests;
 
 /// <summary>
-/// 验证稀疏候选路径与既有全局匹配语义一致。
+/// 验证 Schema 和描述硬过滤路径与全局匹配语义一致。
 /// </summary>
-public sealed class SparseCandidateMatchingTests
+public sealed class HardFilterMatchingTests
 {
     /// <summary>
     /// 验证 256 个唯一工具保持原始左侧顺序。
@@ -26,17 +26,16 @@ public sealed class SparseCandidateMatchingTests
     }
 
     /// <summary>
-    /// 验证无描述工具使用名称相似度完成稀疏匹配。
+    /// 验证无描述工具使用名称相似度选择唯一最佳候选。
     /// </summary>
     [Fact]
-    public void Intersect_matches_name_only_declarations()
+    public void Intersect_uses_name_similarity_to_choose_the_best_candidate()
     {
         var left = CreateSet(
             Declaration("get_user_profile", string.Empty),
             Declaration("list_team_members", string.Empty));
         var right = CreateSet(
-            Declaration("mcp__get_user_profile", string.Empty),
-            Declaration("other_tool", string.Empty));
+            Declaration("mcp__get_user_profile", string.Empty));
 
         var intersection = left.Intersect(right);
 
@@ -46,10 +45,10 @@ public sealed class SparseCandidateMatchingTests
     }
 
     /// <summary>
-    /// 验证大型无描述分组使用名称 token 稀疏索引。
+    /// 验证大型无描述分组保持全局匹配语义。
     /// </summary>
     [Fact]
-    public void Intersect_matches_name_only_groups_above_the_sparse_threshold()
+    public void Intersect_matches_name_only_groups()
     {
         var leftDeclarations = Enumerable.Range(0, 32)
             .Select(index => Declaration($"tool_{index:D3}", string.Empty))
@@ -63,28 +62,6 @@ public sealed class SparseCandidateMatchingTests
         var intersection = left.Intersect(right);
 
         Assert.Equal(leftDeclarations, intersection);
-    }
-
-    /// <summary>
-    /// 验证阈值为零时仍保留现有全部候选行为。
-    /// </summary>
-    [Fact]
-    public void Intersect_honors_zero_score_threshold()
-    {
-        var left = CreateSet(
-            Declaration("alpha", "Alpha operation."),
-            Declaration("beta", "Beta operation."));
-        var right = CreateSet(Declaration("unrelated", "Unrelated operation."));
-        var options = new AIFunctionMatchOptions
-        {
-            MinimumMatchScore = 0,
-            MinimumDescriptionSimilarity = 0,
-            MinimumScoreGap = 0,
-        };
-
-        var intersection = left.Intersect(right, options);
-
-        Assert.Single(intersection);
     }
 
     /// <summary>
