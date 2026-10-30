@@ -12,13 +12,13 @@
 
 `AIFunctionDeclarationSet` 实现 `IReadOnlyCollection<AIFunctionDeclaration>`。集合直接保留调用方传入的声明实例；声明加入集合后，调用方必须保证 Name、Description、JsonSchema 和 ReturnJsonSchema 不再变化。
 
-集合首次执行 `Except` 或 `Intersect` 时会线程安全地构建声明匹配索引，后续操作复用该索引。进程级服务端集合适合长期持有，请求级集合则只为本次请求构建一次索引。
+集合首次执行 `Except` 或 `Intersect` 时会线程安全地构建声明匹配索引，后续操作复用该索引。进程级服务端集合适合长期持有；请求级集合不需要构建完整索引。
 
-匹配过程使用调用级池化工作数组；当同一条 Schema 和描述下每组最多只有一个左右声明时，会直接匹配并跳过名称分词和 Hungarian 全局分配。请求侧索引使用 canonical UTF-8 Schema 指纹和池化描述指纹，避免持久保留描述 token 集合与 `HashSet` 桶结构。
+匹配器会自动选择已经缓存索引的一侧作为查询目标，并流式读取另一侧声明。因此服务端集合位于操作左侧或右侧都能复用缓存；两侧都已缓存时直接使用两个索引。唯一 `(Schema, 描述)` 桶直接匹配并跳过名称分词。
 
-匹配器先按 Schema 语义指纹分组，再在分组内按描述语义指纹建立紧凑描述桶。只有同一 `(Schema, 描述)` 桶中的声明才能建立候选；描述桶出现多个左右声明时，才构建名称 token 并执行 Hungarian 全局一对一分配。名称不设置最低分或最小分差。
+匹配器先按 Schema 语义指纹分组，再在分组内按描述语义指纹建立紧凑描述桶。只有同一 `(Schema, 描述)` 桶中的声明才能建立候选；描述桶出现多个左右声明时，才构建所需名称 token 并执行全局一对一分配。名称不设置最低分或最小分差。
 
-请求侧描述会先进行 NFKC 规范化，再忽略大小写、空白、标点和词序，对规范化 token 集合计算 SHA-256 描述指纹。描述指纹只保存固定大小的摘要，不保留描述 token 或描述倒排索引。名称 token 只在重复描述桶需要比较名称相似度时按需构建。
+解析 JSON 时直接使用原始 UTF-8 字节检查 4 MiB 限制；一次索引构建内会复用原始 Schema 字节完全相同的语义签名。描述先进行 NFKC 规范化，再忽略大小写、空白、标点和词序，对规范化 token 集合计算 SHA-256 描述指纹。
 
 ## 基本用法
 
@@ -114,4 +114,4 @@ dotnet run --project benchmarks/AIFunctionSetMatcher.Benchmarks/AIFunctionSetMat
 dotnet run --project benchmarks/AIFunctionSetMatcher.Benchmarks/AIFunctionSetMatcher.Benchmarks.csproj --configuration Release --no-build -- --list flat
 ```
 
-本机原始基线和历史优化结果保存在 `docs/benchmarks`。Schema 与描述硬过滤基准记录见 [`docs/benchmarks/2026-10-30-ai-function-set-matcher-hard-filter.md`](docs/benchmarks/2026-10-30-ai-function-set-matcher-hard-filter.md)。基准结果依赖 CPU、运行时和后台负载，不用于 CI 硬性性能断言。
+本机原始基线和历史优化结果保存在 `docs/benchmarks`。Schema 与描述硬过滤基准记录见 [`docs/benchmarks/2026-10-30-ai-function-set-matcher-hard-filter.md`](docs/benchmarks/2026-10-30-ai-function-set-matcher-hard-filter.md)，双向流式匹配优化结果见 [`docs/benchmarks/2026-10-30-ai-function-set-matcher-bidirectional-optimization.md`](docs/benchmarks/2026-10-30-ai-function-set-matcher-bidirectional-optimization.md)。基准结果依赖 CPU、运行时和后台负载，不用于 CI 硬性性能断言。

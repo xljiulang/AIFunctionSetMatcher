@@ -1,5 +1,5 @@
 using Microsoft.Extensions.AI;
-using System.Text;
+using System.Runtime.InteropServices;
 using System.Text.Json;
 using AIFunctionSetMatcher.Internal;
 
@@ -33,6 +33,26 @@ public sealed class AIFunctionDeclarationSet
     /// 获取集合中的声明数量。
     /// </summary>
     public int Count => _declarations.Length;
+
+    /// <summary>
+    /// 获取匹配索引是否已经创建。
+    /// </summary>
+    internal bool IsMatchIndexCreated
+    {
+        get
+        {
+            return _matchIndex.IsValueCreated;
+        }
+    }
+
+    /// <summary>
+    /// 获取集合中按原始顺序排列的声明。
+    /// </summary>
+    /// <returns>声明只读跨度。</returns>
+    internal ReadOnlySpan<AIFunctionDeclaration> GetDeclarations()
+    {
+        return _declarations;
+    }
 
     /// <summary>
     /// 从函数声明序列创建集合，并直接保留原始声明引用。
@@ -190,11 +210,9 @@ public sealed class AIFunctionDeclarationSet
         ArgumentNullException.ThrowIfNull(other);
         options ??= AIFunctionMatchOptions.Default;
         options.Validate();
-        return CreateVerified(
-            DeclarationMatcher.FindUnmatched(
-                _matchIndex.Value,
-                other._matchIndex.Value,
-                options));
+        Span<bool> matchedLeft = stackalloc bool[_declarations.Length];
+        MatchLeft(other, options, matchedLeft);
+        return CreateVerified(CreateResult(matchedLeft, keepMatched: false));
     }
 
     /// <summary>
@@ -210,11 +228,9 @@ public sealed class AIFunctionDeclarationSet
         ArgumentNullException.ThrowIfNull(other);
         options ??= AIFunctionMatchOptions.Default;
         options.Validate();
-        return CreateVerified(
-            DeclarationMatcher.FindMatched(
-                _matchIndex.Value,
-                other._matchIndex.Value,
-                options));
+        Span<bool> matchedLeft = stackalloc bool[_declarations.Length];
+        MatchLeft(other, options, matchedLeft);
+        return CreateVerified(CreateResult(matchedLeft, keepMatched: true));
     }
 
     /// <summary>
@@ -224,7 +240,7 @@ public sealed class AIFunctionDeclarationSet
     /// <returns>解析后的函数声明和下一页游标。</returns>
     private static ParsedPage ParsePage(JsonElement json)
     {
-        if (Encoding.UTF8.GetByteCount(json.GetRawText()) > MaximumDocumentBytes)
+        if (JsonMarshal.GetRawUtf8Value(json).Length > MaximumDocumentBytes)
         {
             throw new AIFunctionDeclarationSetParseException(
                 "JSON 文档不能超过 4 MiB。");
@@ -485,6 +501,78 @@ public sealed class AIFunctionDeclarationSet
         AIFunctionDeclaration[] declarations)
     {
         return new AIFunctionDeclarationSet(declarations);
+    }
+
+    /// <summary>
+    /// 使用已缓存的索引侧匹配当前集合与另一个集合。
+    /// </summary>
+    /// <param name="other">用于比较的函数声明集合。</param>
+    /// <param name="options">匹配选项。</param>
+    /// <param name="matchedLeft">接收当前集合匹配下标的栈上标记。</param>
+    private void MatchLeft(
+        AIFunctionDeclarationSet other,
+        AIFunctionMatchOptions options,
+        Span<bool> matchedLeft)
+    {
+        if (_matchIndex.IsValueCreated && other._matchIndex.IsValueCreated)
+        {
+            DeclarationMatcher.FindMatchedIndexes(
+                _matchIndex.Value,
+                other._matchIndex.Value,
+                options,
+                matchedLeft);
+            return;
+        }
+
+        if (!_matchIndex.IsValueCreated && other._matchIndex.IsValueCreated)
+        {
+            DeclarationMatcher.FindMatchedIndexes(
+                other._matchIndex.Value,
+                _declarations,
+                probeIsLeft: true,
+                options,
+                matchedLeft);
+            return;
+        }
+
+        DeclarationMatcher.FindMatchedIndexes(
+            _matchIndex.Value,
+            other._declarations,
+            probeIsLeft: false,
+            options,
+            matchedLeft);
+    }
+
+    /// <summary>
+    /// 根据左侧匹配标记创建结果数组。
+    /// </summary>
+    /// <param name="matchedLeft">左侧匹配下标标记。</param>
+    /// <param name="keepMatched">保留匹配项而不是未匹配项时为 <see langword="true"/>。</param>
+    /// <returns>按左侧原始顺序排列的声明数组。</returns>
+    private AIFunctionDeclaration[] CreateResult(
+        ReadOnlySpan<bool> matchedLeft,
+        bool keepMatched)
+    {
+        var resultCount = 0;
+        for (var index = 0; index < _declarations.Length; index++)
+        {
+            if (matchedLeft[index] == keepMatched)
+            {
+                resultCount++;
+            }
+        }
+
+        var result = new AIFunctionDeclaration[resultCount];
+        var resultIndex = 0;
+        for (var index = 0; index < _declarations.Length; index++)
+        {
+            if (matchedLeft[index] == keepMatched)
+            {
+                result[resultIndex++] = _declarations[index];
+            }
+        }
+
+        return result;
     }
 
     /// <summary>

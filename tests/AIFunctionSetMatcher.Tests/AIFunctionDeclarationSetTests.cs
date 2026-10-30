@@ -1736,7 +1736,7 @@ public sealed class AIFunctionDeclarationSetTests
     }
 
     [Fact]
-    public void Matching_reuses_the_cached_index()
+    public void Matching_reuses_the_cached_target_index()
     {
         using var schema = JsonDocument.Parse("""{ "type": "object" }""");
         var leftDeclaration = new CountingDeclaration(
@@ -1754,12 +1754,11 @@ public sealed class AIFunctionDeclarationSetTests
 
         left.Except(right);
         var leftCounts = leftDeclaration.GetReadCounts();
-        var rightCounts = rightDeclaration.GetReadCounts();
 
         left.Except(right);
 
         Assert.Equal(leftCounts, leftDeclaration.GetReadCounts());
-        Assert.Equal(rightCounts, rightDeclaration.GetReadCounts());
+        Assert.True(rightDeclaration.GetReadCounts().Schema >= 2);
     }
 
     [Fact]
@@ -1787,7 +1786,109 @@ public sealed class AIFunctionDeclarationSetTests
     }
 
     [Fact]
-    public void Concurrent_first_matching_builds_each_name_profile_once()
+    public void Intersect_does_not_create_request_index_when_server_is_left()
+    {
+        const string schema = """{ "type": "object" }""";
+        var server = AIFunctionDeclarationSet.From(
+            [Declaration("get_weather", "Get weather.", schema)]);
+        server.Intersect(server);
+        var request = AIFunctionDeclarationSet.From(
+            [Declaration("get_weather", "Get weather.", schema)]);
+
+        var intersection = server.Intersect(request);
+
+        Assert.Single(intersection);
+        Assert.True(server.IsMatchIndexCreated);
+        Assert.False(request.IsMatchIndexCreated);
+    }
+
+    [Fact]
+    public void Intersect_uses_cached_right_index_when_request_is_left()
+    {
+        const string schema = """{ "type": "object" }""";
+        var server = AIFunctionDeclarationSet.From(
+            [Declaration("get_weather", "Get weather.", schema)]);
+        server.Intersect(server);
+        var request = AIFunctionDeclarationSet.From(
+            [Declaration("get_weather", "Get weather.", schema)]);
+
+        var intersection = request.Intersect(server);
+
+        Assert.Single(intersection);
+        Assert.False(request.IsMatchIndexCreated);
+        Assert.True(server.IsMatchIndexCreated);
+    }
+
+    [Fact]
+    public void Except_uses_cached_right_index_when_request_is_left()
+    {
+        const string schema = """{ "type": "object" }""";
+        var server = AIFunctionDeclarationSet.From(
+            [
+                Declaration("get_weather", "Get weather.", schema),
+                Declaration("list_users", "List users.", schema),
+            ]);
+        server.Intersect(server);
+        var request = AIFunctionDeclarationSet.From(
+            [Declaration("get_weather", "Get weather.", schema)]);
+
+        var remainder = request.Except(server);
+
+        Assert.Empty(remainder);
+        Assert.False(request.IsMatchIndexCreated);
+    }
+
+    [Fact]
+    public void Duplicate_descriptions_match_in_both_operand_orders()
+    {
+        const string schema = """{ "type": "object" }""";
+        const string description = "Perform records operation.";
+        var server = AIFunctionDeclarationSet.From(
+            [
+                Declaration("get_user", description, schema),
+                Declaration("get_record", description, schema),
+            ]);
+        server.Intersect(server);
+        var requestFromLeft = AIFunctionDeclarationSet.From(
+            [
+                Declaration("mcp__get_user", description, schema),
+                Declaration("mcp__get_record", description, schema),
+            ]);
+        var requestFromRight = AIFunctionDeclarationSet.From(
+            [
+                Declaration("mcp__get_user", description, schema),
+                Declaration("mcp__get_record", description, schema),
+            ]);
+
+        var serverIntersection = server.Intersect(requestFromLeft);
+        var requestIntersection = requestFromRight.Intersect(server);
+
+        Assert.Equal(server, serverIntersection);
+        Assert.Equal(requestFromRight, requestIntersection);
+        Assert.False(requestFromLeft.IsMatchIndexCreated);
+        Assert.False(requestFromRight.IsMatchIndexCreated);
+    }
+
+    [Fact]
+    public void Intersect_uses_both_cached_indexes_when_available()
+    {
+        const string schema = """{ "type": "object" }""";
+        var left = AIFunctionDeclarationSet.From(
+            [Declaration("get_weather", "Get weather.", schema)]);
+        var right = AIFunctionDeclarationSet.From(
+            [Declaration("get_weather", "Get weather.", schema)]);
+        left.Intersect(left);
+        right.Intersect(right);
+
+        var intersection = left.Intersect(right);
+
+        Assert.Single(intersection);
+        Assert.True(left.IsMatchIndexCreated);
+        Assert.True(right.IsMatchIndexCreated);
+    }
+
+    [Fact]
+    public void Concurrent_first_matching_caches_target_name_profiles_once()
     {
         using var schema = JsonDocument.Parse("""{ "type": "object" }""");
         var leftFirst = new CountingDeclaration(
@@ -1819,8 +1920,8 @@ public sealed class AIFunctionDeclarationSetTests
 
         Assert.Equal(1, leftFirst.NameReadCount);
         Assert.Equal(1, leftSecond.NameReadCount);
-        Assert.Equal(1, rightFirst.NameReadCount);
-        Assert.Equal(1, rightSecond.NameReadCount);
+        Assert.True(rightFirst.NameReadCount > 1);
+        Assert.True(rightSecond.NameReadCount > 1);
     }
 
     [Fact]

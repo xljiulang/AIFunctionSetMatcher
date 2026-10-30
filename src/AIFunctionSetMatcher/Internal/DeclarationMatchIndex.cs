@@ -79,10 +79,11 @@ internal sealed class DeclarationMatchIndex
         var maximumSchemaByteCount = 0;
         using var signatureWorkspace = new SchemaSignatureWorkspace();
         using var descriptionWorkspace = new DescriptionFingerprintWorkspace();
+        var signatureCache = new SchemaSignatureCache();
         for (var index = 0; index < declarationArray.Length; index++)
         {
             var declaration = declarationArray[index];
-            var signature = SchemaSignature.Compute(
+            var signature = signatureCache.GetOrCompute(
                 declaration,
                 signatureWorkspace);
             var descriptionFingerprint =

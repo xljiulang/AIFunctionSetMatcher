@@ -97,6 +97,8 @@ public class HardFilterBenchmarks
                     $"mcp__tool_alpha_{index:D3}",
                     "Process benchmark records.",
                     schemaElement)));
+        duplicateDescriptionLeft.Intersect(duplicateDescriptionLeft);
+        duplicateDescriptionRight.Intersect(duplicateDescriptionRight);
         differentSchemaRight = AIFunctionDeclarationSet.From(
             CreateDeclarations(
                 index => CreateDeclaration(
