@@ -76,6 +76,10 @@ public class SetOperationBenchmarks
                 $"mcp__tool_alpha_{index:D3}",
                 "Process benchmark records.",
                 schemaElement));
+        left.Intersect(left);
+        exactRight.Intersect(exactRight);
+        duplicateDescriptionLeft.Intersect(duplicateDescriptionLeft);
+        duplicateDescriptionRight.Intersect(duplicateDescriptionRight);
     }
 
     /// <summary>
@@ -161,6 +165,26 @@ public class SetOperationBenchmarks
     {
         var requestSet = AIFunctionDeclarationSet.From(exactRightDeclarations);
         _consumer.Consume(left.Except(requestSet));
+    }
+
+    /// <summary>
+    /// 测量复用右侧服务端缓存并创建新请求左侧集合时的交集。
+    /// </summary>
+    [Benchmark]
+    public void Intersect_CachedRightRequestSet()
+    {
+        var requestSet = AIFunctionDeclarationSet.From(exactRightDeclarations);
+        _consumer.Consume(requestSet.Intersect(exactRight));
+    }
+
+    /// <summary>
+    /// 测量复用右侧服务端缓存并创建新请求左侧集合时的差集。
+    /// </summary>
+    [Benchmark]
+    public void Except_CachedRightRequestSet()
+    {
+        var requestSet = AIFunctionDeclarationSet.From(exactRightDeclarations);
+        _consumer.Consume(requestSet.Except(exactRight));
     }
 
     private AIFunctionDeclarationSet CreateSet(

@@ -3,66 +3,31 @@ using Microsoft.Extensions.AI;
 namespace AIFunctionSetMatcher.Internal;
 
 /// <summary>
-/// 使用 Schema 和描述硬过滤、名称相似度和全局一对一分配匹配函数声明。
+/// 使用已缓存索引侧和流式探测声明执行 Schema 与描述硬过滤匹配。
 /// </summary>
 internal static class DeclarationMatcher
 {
     private const double InvalidCost = 1_000;
 
     /// <summary>
-    /// 查找左侧集合中无法与右侧集合建立匹配的声明。
-    /// </summary>
-    /// <param name="left">左侧函数声明匹配索引。</param>
-    /// <param name="right">右侧函数声明匹配索引。</param>
-    /// <param name="options">匹配选项。</param>
-    /// <returns>按左侧原始顺序排列的未匹配声明。</returns>
-    public static AIFunctionDeclaration[] FindUnmatched(
-        DeclarationMatchIndex left,
-        DeclarationMatchIndex right,
-        AIFunctionMatchOptions options)
-    {
-        Span<bool> matchedLeft = stackalloc bool[left.Count];
-        FindMatchedIndexes(left, right, options, matchedLeft);
-        return CreateResult(left, matchedLeft, keepMatched: false);
-    }
-
-    /// <summary>
-    /// 查找左侧集合中能够与右侧集合建立匹配的声明。
-    /// </summary>
-    /// <param name="left">左侧函数声明匹配索引。</param>
-    /// <param name="right">右侧函数声明匹配索引。</param>
-    /// <param name="options">匹配选项。</param>
-    /// <returns>按左侧原始顺序排列的匹配声明。</returns>
-    public static AIFunctionDeclaration[] FindMatched(
-        DeclarationMatchIndex left,
-        DeclarationMatchIndex right,
-        AIFunctionMatchOptions options)
-    {
-        Span<bool> matchedLeft = stackalloc bool[left.Count];
-        FindMatchedIndexes(left, right, options, matchedLeft);
-        return CreateResult(left, matchedLeft, keepMatched: true);
-    }
-
-    /// <summary>
-    /// 计算左侧集合中成功匹配项的下标标记。
+    /// 计算两个已建立索引集合的左侧匹配下标标记。
     /// </summary>
     /// <param name="left">左侧函数声明匹配索引。</param>
     /// <param name="right">右侧函数声明匹配索引。</param>
     /// <param name="options">匹配选项。</param>
     /// <param name="matchedLeft">接收左侧匹配下标的栈上标记。</param>
-    private static void FindMatchedIndexes(
+    public static void FindMatchedIndexes(
         DeclarationMatchIndex left,
         DeclarationMatchIndex right,
         AIFunctionMatchOptions options,
         Span<bool> matchedLeft)
     {
-        if (left.Count == 0 || right.Count == 0)
+        if (matchedLeft.IsEmpty || left.Count == 0 || right.Count == 0)
         {
             return;
         }
 
-        ValidateSchemaSizes(left, right, options.MaximumSchemaBytes);
-
+        ValidateIndexedSchemaSizes(left, right, options.MaximumSchemaBytes);
         foreach (var (fingerprint, leftGroup) in left.GroupsByFingerprint)
         {
             if (!right.GroupsByFingerprint.TryGetValue(
@@ -72,7 +37,7 @@ internal static class DeclarationMatcher
                 continue;
             }
 
-            MatchDescriptionBuckets(
+            MatchIndexedDescriptionBuckets(
                 leftGroup,
                 rightGroup,
                 matchedLeft);
@@ -80,12 +45,144 @@ internal static class DeclarationMatcher
     }
 
     /// <summary>
-    /// 匹配同一 Schema 分组内具有相同描述指纹的声明。
+    /// 计算流式探测声明中与索引目标匹配的左侧下标标记。
+    /// </summary>
+    /// <param name="target">已建立匹配索引的一侧。</param>
+    /// <param name="probeDeclarations">逐条探测的声明。</param>
+    /// <param name="probeIsLeft">探测声明属于调用左侧时为 <see langword="true"/>。</param>
+    /// <param name="options">匹配选项。</param>
+    /// <param name="matchedLeft">接收调用左侧匹配下标的栈上标记。</param>
+    public static void FindMatchedIndexes(
+        DeclarationMatchIndex target,
+        ReadOnlySpan<AIFunctionDeclaration> probeDeclarations,
+        bool probeIsLeft,
+        AIFunctionMatchOptions options,
+        Span<bool> matchedLeft)
+    {
+        if (matchedLeft.IsEmpty ||
+            target.Count == 0 ||
+            probeDeclarations.IsEmpty)
+        {
+            return;
+        }
+
+        ValidateTargetSchemaSizes(target, options.MaximumSchemaBytes);
+
+        using var schemaWorkspace = new SchemaSignatureWorkspace();
+        using var descriptionWorkspace = new DescriptionFingerprintWorkspace();
+        var signatureCache = new SchemaSignatureCache();
+        ProbeEntry?[] firstProbeByTarget = new ProbeEntry?[target.Count];
+        Dictionary<DescriptionBucketKey, List<ProbeEntry>>? ambiguousBuckets = null;
+        for (var probeIndex = 0;
+             probeIndex < probeDeclarations.Length;
+             probeIndex++)
+        {
+            var declaration = probeDeclarations[probeIndex];
+            var signature = signatureCache.GetOrCompute(
+                declaration,
+                schemaWorkspace);
+            ValidateProbeSchemaSize(
+                declaration,
+                signature.Utf8ByteCount,
+                options.MaximumSchemaBytes);
+            var descriptionFingerprint =
+                TextSimilarity.ComputeDescriptionFingerprint(
+                    declaration.Description,
+                    descriptionWorkspace);
+            if (!target.GroupsByFingerprint.TryGetValue(
+                    signature.Fingerprint,
+                    out var targetGroup))
+            {
+                continue;
+            }
+
+            var targetBuckets = targetGroup.DescriptionBuckets;
+            if (!targetBuckets.BucketSlots.TryGetValue(
+                    descriptionFingerprint,
+                    out var targetSlot))
+            {
+                continue;
+            }
+
+            var targetProfileIndexes =
+                targetBuckets.GetProfileIndexes(targetSlot);
+            var key = new DescriptionBucketKey(
+                signature.Fingerprint,
+                targetSlot);
+            var probeEntry = new ProbeEntry(
+                declaration,
+                probeIndex,
+                signature.Fingerprint,
+                signature.Utf8ByteCount,
+                descriptionFingerprint);
+            if (targetProfileIndexes.Length > 1)
+            {
+                AddAmbiguousProbe(
+                    ref ambiguousBuckets,
+                    key,
+                    probeEntry);
+                continue;
+            }
+
+            if (ambiguousBuckets is not null &&
+                ambiguousBuckets.TryGetValue(key, out var existingEntries))
+            {
+                existingEntries.Add(probeEntry);
+                continue;
+            }
+
+            var targetGlobalIndex =
+                targetGroup.GlobalIndexes[targetProfileIndexes[0]];
+            var firstProbe = firstProbeByTarget[targetGlobalIndex];
+            if (firstProbe is null)
+            {
+                firstProbeByTarget[targetGlobalIndex] = probeEntry;
+                MarkTentativeMatch(
+                    probeEntry,
+                    targetGlobalIndex,
+                    probeIsLeft,
+                    matchedLeft);
+                continue;
+            }
+
+            ClearTentativeMatch(
+                firstProbe.Value,
+                targetGlobalIndex,
+                probeIsLeft,
+                matchedLeft);
+            AddAmbiguousProbe(
+                ref ambiguousBuckets,
+                key,
+                firstProbe.Value);
+            AddAmbiguousProbe(
+                ref ambiguousBuckets,
+                key,
+                probeEntry);
+        }
+
+        if (ambiguousBuckets is null)
+        {
+            return;
+        }
+
+        foreach (var (key, probeEntries) in ambiguousBuckets)
+        {
+            MatchAmbiguousBucket(
+                target,
+                key,
+                probeEntries,
+                probeIsLeft,
+                matchedLeft);
+        }
+    }
+
+    /// <summary>
+    /// 匹配两个已建立索引的 Schema 分组中相同描述桶。
     /// </summary>
     /// <param name="leftGroup">左侧 Schema 分组。</param>
     /// <param name="rightGroup">右侧 Schema 分组。</param>
-    /// <param name="matchedLeft">接收左侧匹配下标的栈上标记。</param>
-    private static void MatchDescriptionBuckets(
+    /// <param name="matchedLeft">左侧匹配下标标记。</param>
+    private static void MatchIndexedDescriptionBuckets(
         SchemaGroupIndex leftGroup,
         SchemaGroupIndex rightGroup,
         Span<bool> matchedLeft)
@@ -102,68 +199,229 @@ internal static class DeclarationMatcher
                 continue;
             }
 
-            var leftProfileIndexes =
-                leftBuckets.GetProfileIndexes(leftSlot);
-            var rightProfileIndexes =
-                rightBuckets.GetProfileIndexes(rightSlot);
-            if (leftProfileIndexes.Length == 1 &&
-                rightProfileIndexes.Length == 1)
+            var leftIndexes = leftBuckets.GetProfileIndexes(leftSlot);
+            var rightIndexes = rightBuckets.GetProfileIndexes(rightSlot);
+            if (leftIndexes.Length == 1 && rightIndexes.Length == 1)
             {
-                matchedLeft[
-                    leftGroup.GlobalIndexes[leftProfileIndexes[0]]] = true;
+                matchedLeft[leftGroup.GlobalIndexes[leftIndexes[0]]] = true;
                 continue;
             }
 
-            MatchDescriptionBucket(
+            MatchIndexedBucket(
                 leftGroup,
                 rightGroup,
-                leftProfileIndexes,
-                rightProfileIndexes,
+                leftIndexes,
+                rightIndexes,
                 matchedLeft);
         }
     }
 
     /// <summary>
-    /// 使用名称相似度为重复描述桶执行全局一对一分配。
+    /// 使用两个已缓存分组为重复描述桶执行名称分配。
     /// </summary>
     /// <param name="leftGroup">左侧 Schema 分组。</param>
     /// <param name="rightGroup">右侧 Schema 分组。</param>
-    /// <param name="leftProfileIndexes">左侧描述桶中的组内 profile 下标。</param>
-    /// <param name="rightProfileIndexes">右侧描述桶中的组内 profile 下标。</param>
-    /// <param name="matchedLeft">接收左侧匹配下标的栈上标记。</param>
-    private static void MatchDescriptionBucket(
+    /// <param name="leftIndexes">左侧描述桶下标。</param>
+    /// <param name="rightIndexes">右侧描述桶下标。</param>
+    /// <param name="matchedLeft">左侧匹配下标标记。</param>
+    private static void MatchIndexedBucket(
         SchemaGroupIndex leftGroup,
         SchemaGroupIndex rightGroup,
-        ReadOnlySpan<int> leftProfileIndexes,
-        ReadOnlySpan<int> rightProfileIndexes,
+        ReadOnlySpan<int> leftIndexes,
+        ReadOnlySpan<int> rightIndexes,
         Span<bool> matchedLeft)
     {
         using var workspace = new MatchWorkspace(
-            leftProfileIndexes.Length,
-            rightProfileIndexes.Length);
+            leftIndexes.Length,
+            rightIndexes.Length);
         BuildNameScoreMatrix(
             leftGroup.Profiles,
-            leftProfileIndexes,
+            leftIndexes,
             rightGroup.Profiles,
-            rightProfileIndexes,
+            rightIndexes,
             workspace);
-
+        Span<int> rightByLeft = stackalloc int[leftIndexes.Length];
+        rightByLeft.Fill(-1);
         MaximumWeightAssignment.Find(
-            leftProfileIndexes.Length,
-            rightProfileIndexes.Length,
+            leftIndexes.Length,
+            rightIndexes.Length,
             workspace,
-            leftGroup.GlobalIndexes,
-            leftProfileIndexes,
-            matchedLeft);
+            rightByLeft);
+        for (var row = 0; row < leftIndexes.Length; row++)
+        {
+            matchedLeft[leftGroup.GlobalIndexes[leftIndexes[row]]] =
+                rightByLeft[row] >= 0;
+        }
     }
 
     /// <summary>
-    /// 按当前调用选项验证左右匹配索引中的 Schema 大小。
+    /// 将探测项加入需要名称分配的描述桶。
+    /// </summary>
+    /// <param name="ambiguousBuckets">需要名称分配的描述桶集合。</param>
+    /// <param name="key">目标描述桶键。</param>
+    /// <param name="probeEntry">要加入的探测项。</param>
+    private static void AddAmbiguousProbe(
+        ref Dictionary<DescriptionBucketKey, List<ProbeEntry>>?
+            ambiguousBuckets,
+        DescriptionBucketKey key,
+        ProbeEntry probeEntry)
+    {
+        ambiguousBuckets ??=
+            new Dictionary<DescriptionBucketKey, List<ProbeEntry>>();
+        if (!ambiguousBuckets.TryGetValue(key, out var entries))
+        {
+            entries = [];
+            ambiguousBuckets.Add(key, entries);
+        }
+
+        entries.Add(probeEntry);
+    }
+
+    /// <summary>
+    /// 暂定标记单声明描述桶的匹配。
+    /// </summary>
+    /// <param name="probeEntry">探测项。</param>
+    /// <param name="targetGlobalIndex">目标侧全局下标。</param>
+    /// <param name="probeIsLeft">探测侧是否为调用左侧。</param>
+    /// <param name="matchedLeft">调用左侧匹配标记。</param>
+    private static void MarkTentativeMatch(
+        ProbeEntry probeEntry,
+        int targetGlobalIndex,
+        bool probeIsLeft,
+        Span<bool> matchedLeft)
+    {
+        matchedLeft[
+            probeIsLeft ? probeEntry.ProbeIndex : targetGlobalIndex] = true;
+    }
+
+    /// <summary>
+    /// 撤销单声明描述桶的暂定匹配。
+    /// </summary>
+    /// <param name="probeEntry">首个探测项。</param>
+    /// <param name="targetGlobalIndex">目标侧全局下标。</param>
+    /// <param name="probeIsLeft">探测侧是否为调用左侧。</param>
+    /// <param name="matchedLeft">调用左侧匹配标记。</param>
+    private static void ClearTentativeMatch(
+        ProbeEntry probeEntry,
+        int targetGlobalIndex,
+        bool probeIsLeft,
+        Span<bool> matchedLeft)
+    {
+        matchedLeft[
+            probeIsLeft ? probeEntry.ProbeIndex : targetGlobalIndex] = false;
+    }
+
+    /// <summary>
+    /// 对需要名称比较的描述桶执行全局一对一分配。
+    /// </summary>
+    /// <param name="target">已建立匹配索引的一侧。</param>
+    /// <param name="key">目标描述桶键。</param>
+    /// <param name="probeEntries">该桶中的流式探测项。</param>
+    /// <param name="probeIsLeft">探测侧是否为调用左侧。</param>
+    /// <param name="matchedLeft">调用左侧匹配标记。</param>
+    private static void MatchAmbiguousBucket(
+        DeclarationMatchIndex target,
+        DescriptionBucketKey key,
+        List<ProbeEntry> probeEntries,
+        bool probeIsLeft,
+        Span<bool> matchedLeft)
+    {
+        var targetGroup = target.GroupsByFingerprint[key.SchemaFingerprint];
+        var targetProfileIndexes =
+            targetGroup.DescriptionBuckets.GetProfileIndexes(key.Slot);
+        var probeProfiles = CreateProbeProfiles(probeEntries);
+        Span<int> probeProfileIndexes = stackalloc int[probeEntries.Count];
+        for (var index = 0; index < probeProfileIndexes.Length; index++)
+        {
+            probeProfileIndexes[index] = index;
+        }
+
+        var rowCount = probeIsLeft
+            ? probeProfileIndexes.Length
+            : targetProfileIndexes.Length;
+        var columnCount = probeIsLeft
+            ? targetProfileIndexes.Length
+            : probeProfileIndexes.Length;
+        using var workspace = new MatchWorkspace(rowCount, columnCount);
+        if (probeIsLeft)
+        {
+            BuildNameScoreMatrix(
+                probeProfiles,
+                probeProfileIndexes,
+                targetGroup.Profiles,
+                targetProfileIndexes,
+                workspace);
+        }
+        else
+        {
+            BuildNameScoreMatrix(
+                targetGroup.Profiles,
+                targetProfileIndexes,
+                probeProfiles,
+                probeProfileIndexes,
+                workspace);
+        }
+
+        Span<int> rightByLeft = stackalloc int[rowCount];
+        rightByLeft.Fill(-1);
+        MaximumWeightAssignment.Find(
+            rowCount,
+            columnCount,
+            workspace,
+            rightByLeft);
+
+        for (var row = 0; row < rowCount; row++)
+        {
+            var leftIndex = probeIsLeft
+                ? probeEntries[row].ProbeIndex
+                : targetGroup.GlobalIndexes[targetProfileIndexes[row]];
+            matchedLeft[leftIndex] = rightByLeft[row] >= 0;
+        }
+    }
+
+    /// <summary>
+    /// 为描述桶中的流式探测声明创建名称 token profile。
+    /// </summary>
+    /// <param name="probeEntries">探测项集合。</param>
+    /// <returns>与探测顺序一致的名称 profile。</returns>
+    private static DeclarationMatchProfile[] CreateProbeProfiles(
+        IReadOnlyList<ProbeEntry> probeEntries)
+    {
+        var result = new DeclarationMatchProfile[probeEntries.Count];
+        var interner = probeEntries.Count >= 16
+            ? new TokenInterner()
+            : null;
+        var arena = new TokenArena();
+        try
+        {
+            for (var index = 0; index < probeEntries.Count; index++)
+            {
+                var entry = probeEntries[index];
+                result[index] = DeclarationMatchProfile.Create(
+                    entry.Declaration,
+                    entry.SchemaFingerprint,
+                    entry.SchemaByteCount,
+                    arena,
+                    interner);
+            }
+
+            arena.Seal();
+            return result;
+        }
+        catch
+        {
+            arena.Dispose();
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// 验证两个已建立索引集合的全部 Schema 大小。
     /// </summary>
     /// <param name="left">左侧函数声明匹配索引。</param>
     /// <param name="right">右侧函数声明匹配索引。</param>
     /// <param name="maximumSchemaBytes">当前调用允许的最大 Schema UTF-8 字节数。</param>
-    private static void ValidateSchemaSizes(
+    private static void ValidateIndexedSchemaSizes(
         DeclarationMatchIndex left,
         DeclarationMatchIndex right,
         int maximumSchemaBytes)
@@ -196,12 +454,55 @@ internal static class DeclarationMatcher
     }
 
     /// <summary>
+    /// 验证索引目标侧全部 Schema 的大小。
+    /// </summary>
+    /// <param name="target">已建立匹配索引的一侧。</param>
+    /// <param name="maximumSchemaBytes">当前调用允许的最大 Schema UTF-8 字节数。</param>
+    private static void ValidateTargetSchemaSizes(
+        DeclarationMatchIndex target,
+        int maximumSchemaBytes)
+    {
+        if (target.MaximumSchemaByteCount <= maximumSchemaBytes)
+        {
+            return;
+        }
+
+        for (var index = 0; index < target.Count; index++)
+        {
+            var entry = target.GetEntry(index);
+            if (entry.SchemaByteCount > maximumSchemaBytes)
+            {
+                throw new AIFunctionDeclarationSetParseException(
+                    $"函数“{entry.Declaration.Name}”的 JsonSchema 超过 {maximumSchemaBytes} 字节限制。");
+            }
+        }
+    }
+
+    /// <summary>
+    /// 验证单个流式探测声明的 Schema 大小。
+    /// </summary>
+    /// <param name="declaration">流式探测声明。</param>
+    /// <param name="schemaByteCount">Schema 原始 UTF-8 字节数。</param>
+    /// <param name="maximumSchemaBytes">当前调用允许的最大 Schema UTF-8 字节数。</param>
+    private static void ValidateProbeSchemaSize(
+        AIFunctionDeclaration declaration,
+        int schemaByteCount,
+        int maximumSchemaBytes)
+    {
+        if (schemaByteCount > maximumSchemaBytes)
+        {
+            throw new AIFunctionDeclarationSetParseException(
+                $"函数“{declaration.Name}”的 JsonSchema 超过 {maximumSchemaBytes} 字节限制。");
+        }
+    }
+
+    /// <summary>
     /// 为描述桶内全部合法配对构建名称相似度矩阵。
     /// </summary>
-    /// <param name="leftProfiles">左侧 Schema 分组中的全部匹配档案。</param>
-    /// <param name="leftProfileIndexes">左侧描述桶中的组内 profile 下标。</param>
-    /// <param name="rightProfiles">右侧 Schema 分组中的全部匹配档案。</param>
-    /// <param name="rightProfileIndexes">右侧描述桶中的组内 profile 下标。</param>
+    /// <param name="leftProfiles">左侧匹配档案集合。</param>
+    /// <param name="leftProfileIndexes">左侧描述桶中的 profile 下标。</param>
+    /// <param name="rightProfiles">右侧匹配档案集合。</param>
+    /// <param name="rightProfileIndexes">右侧描述桶中的 profile 下标。</param>
     /// <param name="workspace">当前描述桶的池化工作数组。</param>
     private static void BuildNameScoreMatrix(
         IReadOnlyList<DeclarationMatchProfile> leftProfiles,
@@ -231,38 +532,21 @@ internal static class DeclarationMatcher
     }
 
     /// <summary>
-    /// 根据左侧匹配标记创建精确大小的结果数组。
+    /// 保存流式探测声明的硬过滤键和原始下标。
     /// </summary>
-    /// <param name="left">左侧函数声明匹配索引。</param>
-    /// <param name="matchedLeft">左侧匹配下标标记。</param>
-    /// <param name="keepMatched">保留匹配项而不是未匹配项时为 <see langword="true"/>。</param>
-    /// <returns>按左侧原始顺序排列的声明数组。</returns>
-    private static AIFunctionDeclaration[] CreateResult(
-        DeclarationMatchIndex left,
-        ReadOnlySpan<bool> matchedLeft,
-        bool keepMatched)
-    {
-        var resultCount = 0;
-        for (var index = 0; index < left.Count; index++)
-        {
-            if (matchedLeft[index] == keepMatched)
-            {
-                resultCount++;
-            }
-        }
+    private readonly record struct ProbeEntry(
+        AIFunctionDeclaration Declaration,
+        int ProbeIndex,
+        SchemaFingerprint SchemaFingerprint,
+        int SchemaByteCount,
+        DescriptionFingerprint DescriptionFingerprint);
 
-        var result = new AIFunctionDeclaration[resultCount];
-        var resultIndex = 0;
-        for (var index = 0; index < left.Count; index++)
-        {
-            if (matchedLeft[index] == keepMatched)
-            {
-                result[resultIndex++] = left.GetDeclaration(index);
-            }
-        }
-
-        return result;
-    }
+    /// <summary>
+    /// 标识索引目标侧的 Schema 和描述桶。
+    /// </summary>
+    private readonly record struct DescriptionBucketKey(
+        SchemaFingerprint SchemaFingerprint,
+        int Slot);
 
     /// <summary>
     /// 计算最大匹配数优先、名称相似度总和其次的全局一对一分配。
@@ -270,22 +554,27 @@ internal static class DeclarationMatcher
     private static class MaximumWeightAssignment
     {
         /// <summary>
-        /// 查找描述桶内的全局匹配对，并写入左侧匹配标记。
+        /// 查找描述桶内的全局匹配对，并为每个左侧行写入右侧列。
         /// </summary>
-        /// <param name="rowCount">描述桶左侧声明数量。</param>
-        /// <param name="columnCount">描述桶右侧声明数量。</param>
+        /// <param name="rowCount">左侧声明数量。</param>
+        /// <param name="columnCount">右侧声明数量。</param>
         /// <param name="workspace">当前描述桶的池化工作数组。</param>
-        /// <param name="groupLeftIndexes">Schema 分组中的左侧全局下标。</param>
-        /// <param name="bucketLeftIndexes">描述桶中的组内 profile 下标。</param>
-        /// <param name="matchedLeft">接收左侧匹配下标的栈上标记。</param>
+        /// <param name="rightByLeft">接收每个左侧行匹配右侧列；未匹配为 -1。</param>
         public static void Find(
             int rowCount,
             int columnCount,
             MatchWorkspace workspace,
-            IReadOnlyList<int> groupLeftIndexes,
-            ReadOnlySpan<int> bucketLeftIndexes,
-            Span<bool> matchedLeft)
+            Span<int> rightByLeft)
         {
+            if (AssignmentShortcut.TryAssign(
+                workspace.Scores.AsSpan(0, rowCount * columnCount),
+                rowCount,
+                columnCount,
+                rightByLeft))
+            {
+                return;
+            }
+
             var size = workspace.MatrixSize;
             Array.Clear(workspace.RowPotential, 0, size + 1);
             Array.Clear(workspace.ColumnPotential, 0, size + 1);
@@ -305,16 +594,15 @@ internal static class DeclarationMatcher
                     continue;
                 }
 
-                var profileIndex = bucketLeftIndexes[row - 1];
-                matchedLeft[groupLeftIndexes[profileIndex]] = true;
+                rightByLeft[row - 1] = column - 1;
             }
         }
 
         /// <summary>
         /// 使用 Hungarian 算法计算最小成本完全分配。
         /// </summary>
-        /// <param name="rowCount">实际左侧桶行数。</param>
-        /// <param name="columnCount">实际右侧桶列数。</param>
+        /// <param name="rowCount">实际左侧行数。</param>
+        /// <param name="columnCount">实际右侧列数。</param>
         /// <param name="workspace">当前描述桶的池化工作数组。</param>
         /// <param name="size">补边后的方阵边长。</param>
         private static void FindMinimumCostAssignment(
@@ -404,8 +692,8 @@ internal static class DeclarationMatcher
         /// </summary>
         /// <param name="row">一基左侧行号。</param>
         /// <param name="column">一基右侧列号。</param>
-        /// <param name="rowCount">实际左侧桶行数。</param>
-        /// <param name="columnCount">实际右侧桶列数。</param>
+        /// <param name="rowCount">实际左侧行数。</param>
+        /// <param name="columnCount">实际右侧列数。</param>
         /// <param name="scores">按行优先存储的名称相似度矩阵。</param>
         /// <returns>有效候选为 <c>1 - score</c>，否则为固定无效成本。</returns>
         private static double GetCost(
